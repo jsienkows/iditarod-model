@@ -1,0 +1,499 @@
+"""
+predict_prerace_2026.py
+=======================
+Generate pre-race rankings for the 2026 Iditarod.
+
+Uses target-specific feature sets, validated by 11-year backtesting:
+
+  WIN% derivation (v7 features → P(top5) → normalized):
+    Best winner prediction: 82% winner-in-top-3 in backtest
+
+  TOP 5% / TOP 10% / FINISH% (v8 features):
+    Best group identification: P@5=0.545 in backtest
+
+  VOLATILITY SCORE:
+    Composite measure of outcome uncertainty. Captures mushers with wide
+    outcome ranges — high ceiling but uncertain floor. Derived from:
+    - Sample size (fewer races = more uncertainty)
+    - Peak-to-average gap (big best finish vs mediocre average = volatile)
+    - Years since last race (long absence = unknown current form)
+    - Win-to-Top10 ratio (high win% relative to top10% = boom-or-bust profile)
+    Scaled 0-100 where 100 = maximum volatility.
+
+Usage:
+    python predict_prerace_2026.py
+    python predict_prerace_2026.py --output rankings_2026.csv
+"""
+
+import argparse
+import pandas as pd
+import numpy as np
+
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import roc_auc_score, brier_score_loss
+from scipy.stats import spearmanr
+
+from src.db import connect
+
+
+# V7: best for winner prediction (no last_year_finish_place)
+WIN_FEATURES = [
+    "w_avg_finish_place",
+    "w_pct_top10",
+    "w_pct_finished",
+    "pct_top5",
+    "w_avg_time_behind_winner_seconds",
+    "n_finishes",
+    "w_n_entries",
+    "years_since_last_entry",
+    "is_rookie",
+]
+
+# V8: best for top-5/top-10/finish group identification
+RANK_FEATURES = [
+    "w_avg_finish_place",
+    "w_pct_top10",
+    "w_pct_finished",
+    "pct_top5",
+    "w_avg_time_behind_winner_seconds",
+    "n_finishes",
+    "w_n_entries",
+    "years_since_last_entry",
+    "is_rookie",
+    "last_year_finish_place",
+]
+
+# Additional features needed for volatility computation
+VOLATILITY_FEATURES = [
+    "best_finish_place",
+    "w_avg_finish_place",
+    "n_finishes",
+    "n_entries",
+    "years_since_last_entry",
+    "is_rookie",
+    "pct_finished",
+]
+
+
+def _make_base_model(class_weight="balanced"):
+    return Pipeline([
+        ("imputer", SimpleImputer(strategy="constant", fill_value=0, keep_empty_features=True)),
+        ("scaler", StandardScaler()),
+        ("clf", LogisticRegression(max_iter=4000, class_weight=class_weight)),
+    ])
+
+
+def _make_calibrated_model(class_weight="balanced", cv=5):
+    base = _make_base_model(class_weight=class_weight)
+    try:
+        return CalibratedClassifierCV(estimator=base, method="sigmoid", cv=cv)
+    except TypeError:
+        return CalibratedClassifierCV(base_estimator=base, method="sigmoid", cv=cv)
+
+
+def _table_columns(con, table):
+    return con.execute(f"PRAGMA table_info('{table}')").df()["name"].tolist()
+
+
+def _clean(df, cols):
+    df[cols] = df[cols].apply(pd.to_numeric, errors="coerce")
+    for c in cols:
+        if df[c].dtype.kind in {"f", "i"}:
+            arr = df[c].to_numpy(dtype=float, na_value=0)
+            df.loc[~np.isfinite(arr), c] = np.nan
+    return df
+
+
+def _model_cols(feature_cols):
+    return feature_cols + [f"{c}_missing" for c in feature_cols]
+
+
+def build_train_data(con, year_min, year_max, all_features):
+    ms = con.execute(
+        f"SELECT year, musher_id, {', '.join(all_features)} "
+        f"FROM musher_strength WHERE year BETWEEN ? AND ?",
+        [year_min, year_max],
+    ).df()
+    hr = con.execute(
+        "SELECT year, musher_id, finish_place, status "
+        "FROM historical_results WHERE year BETWEEN ? AND ?",
+        [year_min, year_max],
+    ).df()
+    df = ms.merge(hr, on=["year", "musher_id"], how="inner")
+
+    df["won"] = (df["finish_place"] == 1).astype("Int64")
+    df["top5"] = (df["finish_place"].notna() & (df["finish_place"] <= 5)).astype("Int64")
+    df["top10"] = (df["finish_place"].notna() & (df["finish_place"] <= 10)).astype("Int64")
+    df["finished"] = (df["finish_place"].notna()).astype("Int64")
+
+    df = _clean(df, all_features)
+    for f in all_features:
+        df[f"{f}_missing"] = df[f].isna().astype("int64")
+    return df
+
+
+def build_2026_data(con, all_features):
+    df = con.execute(
+        f"""
+        SELECT ms.year, ms.musher_id, m.name_canonical AS name,
+               {", ".join(f"ms.{c}" for c in all_features)}
+        FROM musher_strength ms
+        JOIN entries e ON ms.year = e.year AND ms.musher_id = e.musher_id
+        JOIN mushers m ON ms.musher_id = m.musher_id
+        WHERE ms.year = 2026
+          AND (e.status IS NULL OR e.status != 'WITHDRAWN')
+        """,
+    ).df()
+    df = _clean(df, all_features)
+    for f in all_features:
+        df[f"{f}_missing"] = df[f].isna().astype("int64")
+    return df
+
+
+def derive_win_probability(p_top5):
+    EXPONENT = 3.0  # Sharpening factor: concentrates probability mass toward top mushers
+    raw = np.power(np.clip(p_top5, 1e-6, 1.0), EXPONENT)
+    return raw / raw.sum()
+
+
+def compute_volatility(df, p_won, p_top10):
+    """
+    Compute a volatility score (0-100) for each musher.
+
+    Components (each scaled 0-1 before combining):
+
+    1. SAMPLE SIZE UNCERTAINTY (weight: 0.30)
+       Fewer finishes = more uncertainty about true ability.
+       1 finish → max uncertainty, 10+ finishes → minimal uncertainty.
+
+    2. PEAK-TO-AVERAGE GAP (weight: 0.25)
+       Large gap between best finish and weighted average finish = inconsistent.
+       A musher who won once but averages 20th is more volatile than one who
+       averages 5th with a best of 3rd.
+
+    3. ABSENCE UNCERTAINTY (weight: 0.20)
+       Long time since last race = unknown current form.
+       0-1 years = low, 5+ years = high. Rookies get moderate score.
+
+    4. WIN-TO-TOP10 RATIO (weight: 0.15)
+       High win% relative to top10% = boom-or-bust profile.
+       If win% is 25% but top10% is 30%, the model thinks this musher either
+       wins or finishes outside top 10 — very volatile.
+
+    5. FINISH RATE UNCERTAINTY (weight: 0.10)
+       Low career finish rate = risk of scratch.
+    """
+    n = len(df)
+
+    # 1. Sample size uncertainty
+    n_fin = pd.to_numeric(df.get("n_finishes", pd.Series([0]*n)), errors="coerce").fillna(0).values
+    n_ent = pd.to_numeric(df.get("n_entries", pd.Series([0]*n)), errors="coerce").fillna(0).values
+    sample = np.maximum(n_fin, n_ent)
+    sample_unc = np.clip(1.0 - (sample / 10.0), 0.05, 1.0)
+
+    # 2. Peak-to-average gap
+    best = pd.to_numeric(df.get("best_finish_place"), errors="coerce").fillna(25).values
+    avg = pd.to_numeric(df.get("w_avg_finish_place"), errors="coerce").fillna(25).values
+    gap = np.clip(avg - best, 0, None)
+    peak_gap = np.clip(gap / 20.0, 0, 1.0)
+    is_rookie = pd.to_numeric(df.get("is_rookie", pd.Series([0]*n)), errors="coerce").fillna(0).values
+    peak_gap = np.where(is_rookie == 1, 0.5, peak_gap)
+
+    # 3. Absence uncertainty
+    yrs_away = pd.to_numeric(df.get("years_since_last_entry"), errors="coerce").fillna(0).values
+    absence = np.clip(yrs_away / 6.0, 0, 1.0)
+    absence = np.where(is_rookie == 1, 0.4, absence)
+
+    # 4. Win-to-Top10 ratio
+    safe_top10 = np.clip(p_top10, 0.01, 1.0)
+    win_ratio = np.clip(p_won / safe_top10, 0, 1.0)
+
+    # 5. Finish rate uncertainty
+    pct_fin = pd.to_numeric(df.get("pct_finished"), errors="coerce").fillna(0.5).values
+    finish_unc = np.clip(1.0 - pct_fin, 0, 1.0)
+    finish_unc = np.where(is_rookie == 1, 0.45, finish_unc)
+
+    # Weighted composite
+    volatility = (
+        0.30 * sample_unc
+        + 0.25 * peak_gap
+        + 0.20 * absence
+        + 0.15 * win_ratio
+        + 0.10 * finish_unc
+    )
+
+    return (volatility * 100).round(1)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--train_start", type=int, default=2006)
+    ap.add_argument("--train_end", type=int, default=2025)
+    ap.add_argument("--output", type=str, default=None)
+    args = ap.parse_args()
+
+    con = connect()
+
+    available = set(_table_columns(con, "musher_strength"))
+    win_features = [c for c in WIN_FEATURES if c in available]
+    rank_features = [c for c in RANK_FEATURES if c in available]
+    vol_features = [c for c in VOLATILITY_FEATURES if c in available]
+    all_features = list(dict.fromkeys(rank_features + win_features + vol_features))
+
+    print(f"Win model features:  {len(win_features)}")
+    print(f"Rank model features: {len(rank_features)}")
+
+    df_train = build_train_data(con, args.train_start, args.train_end, all_features)
+    df_2026 = build_2026_data(con, all_features)
+    print(f"Training: {len(df_train)} musher-years ({args.train_start}\u2013{args.train_end})")
+    print(f"2026 starters: {len(df_2026)}")
+
+    if df_2026.empty:
+        raise RuntimeError("No 2026 data.")
+
+    win_model_cols = _model_cols(win_features)
+    rank_model_cols = _model_cols(rank_features)
+
+    # ---- Backtest ----
+    print(f"\nBacktest (leave-one-year-out, last 5 years):")
+    bt_years = list(range(max(args.train_start + 5, 2015), args.train_end + 1))
+    bt_model_results = {t: [] for t in ["top5_win", "top5", "top10", "finished"]}
+    bt_composite_results = []
+
+    for test_yr in bt_years:
+        bt_tr = df_train[df_train["year"] < test_yr].copy()
+        bt_te = df_train[df_train["year"] == test_yr].copy()
+        if bt_tr.empty or bt_te.empty:
+            continue
+
+        # Track per-model AUC/Brier
+        yr_probs = {}
+        for target, mcols, key in [
+            ("top5", win_model_cols, "top5_win"),
+            ("top5", rank_model_cols, "top5"),
+            ("top10", rank_model_cols, "top10"),
+            ("finished", rank_model_cols, "finished"),
+        ]:
+            mask_tr = bt_tr[target].notna()
+            y_tr = bt_tr.loc[mask_tr, target].astype(int)
+            if y_tr.nunique() < 2:
+                continue
+            cw = "balanced" if target != "finished" else None
+            model = _make_calibrated_model(class_weight=cw)
+            model.fit(bt_tr.loc[mask_tr, mcols], y_tr)
+            mask_te = bt_te[target].notna()
+            if mask_te.sum() == 0 or bt_te.loc[mask_te, target].astype(int).nunique() < 2:
+                continue
+            p = model.predict_proba(bt_te.loc[mask_te, mcols])[:, 1]
+            y_te = bt_te.loc[mask_te, target].astype(int)
+            auc = roc_auc_score(y_te, p)
+            brier = brier_score_loss(y_te, p)
+            bt_model_results[key].append({"year": test_yr, "auc": auc, "brier": brier})
+            yr_probs[key] = p
+
+        # Build composite ranking for this test year
+        if all(k in yr_probs for k in ["top5_win", "top5", "top10", "finished"]):
+            te = bt_te.copy()
+            te["p_won"] = derive_win_probability(yr_probs["top5_win"])
+            te["p_top5"] = yr_probs["top5"]
+            te["p_top10"] = yr_probs["top10"]
+            te["p_finished"] = yr_probs["finished"]
+
+            for t in ["won", "top5", "top10", "finished"]:
+                te[f"rank_{t}"] = te[f"p_{t}"].rank(ascending=False, method="min")
+
+            te["composite_rank"] = (
+                0.10 * te["rank_won"]
+                + 0.25 * te["rank_top5"]
+                + 0.40 * te["rank_top10"]
+                + 0.25 * te["rank_finished"]
+            )
+            te = te.sort_values("composite_rank").reset_index(drop=True)
+            te["predicted_rank"] = range(1, len(te) + 1)
+
+            # Metrics on composite ranking
+            actual_fp = te["finish_place"].values
+            pred_rank = te["predicted_rank"].values
+
+            # Only evaluate on mushers with actual finish places
+            has_fp = te["finish_place"].notna()
+            if has_fp.sum() > 5:
+                fp_valid = te.loc[has_fp, "finish_place"].values
+                pr_valid = te.loc[has_fp, "predicted_rank"].values
+                sp_corr, _ = spearmanr(pr_valid, fp_valid)
+
+                # P@5: of our predicted top 5, how many actually finished top 5?
+                pred_top5_ids = set(te.head(5).index)
+                actual_top5 = set(te[te["finish_place"] <= 5].index) if (te["finish_place"] <= 5).any() else set()
+                p_at_5 = len(pred_top5_ids & actual_top5) / 5.0
+
+                # P@10: of our predicted top 10, how many actually finished top 10?
+                pred_top10_ids = set(te.head(10).index)
+                actual_top10 = set(te[te["finish_place"] <= 10].index) if (te["finish_place"] <= 10).any() else set()
+                p_at_10 = len(pred_top10_ids & actual_top10) / 10.0
+
+                # Winner in top N of composite ranking
+                winner_rank = te.loc[te["finish_place"] == 1, "predicted_rank"]
+                w_rank = int(winner_rank.iloc[0]) if len(winner_rank) > 0 else 999
+                w_top3 = 1 if w_rank <= 3 else 0
+                w_top5 = 1 if w_rank <= 5 else 0
+
+                bt_composite_results.append({
+                    "year": test_yr, "spearman": sp_corr,
+                    "P@5": p_at_5, "P@10": p_at_10,
+                    "W_top3": w_top3, "W_top5": w_top5,
+                    "winner_predicted_rank": w_rank,
+                })
+
+    # Print per-model metrics
+    print("  Per-model AUC / Brier:")
+    for key in ["top5_win", "top5", "top10", "finished"]:
+        if bt_model_results[key]:
+            aucs = [r["auc"] for r in bt_model_results[key]]
+            briers = [r["brier"] for r in bt_model_results[key]]
+            label = f"{key} (v7)" if key == "top5_win" else f"{key} (v8)"
+            print(f"    {label:>20s}: AUC={np.mean(aucs):.3f} \u00b1 {np.std(aucs):.3f}, "
+                  f"Brier={np.mean(briers):.4f} \u00b1 {np.std(briers):.4f}")
+
+    # Print composite ranking metrics
+    if bt_composite_results:
+        n_bt = len(bt_composite_results)
+        print(f"\n  Composite ranking (n={n_bt} years):")
+        for metric in ["spearman", "P@5", "P@10"]:
+            vals = [r[metric] for r in bt_composite_results]
+            print(f"    {metric:>12s}: {np.mean(vals):.3f} \u00b1 {np.std(vals):.3f}")
+        for metric in ["W_top3", "W_top5"]:
+            vals = [r[metric] for r in bt_composite_results]
+            print(f"    {metric:>12s}: {np.mean(vals):.1%} ({int(np.sum(vals))}/{n_bt})")
+        print(f"    Winner ranks: {[r['winner_predicted_rank'] for r in bt_composite_results]}")
+
+    # ---- Train final models ----
+    print(f"\nTraining final models:")
+    results = df_2026[["musher_id", "name"]].copy()
+
+    # Win model (v7 features → top5 → derived)
+    mask = df_train["top5"].notna()
+    model_win = _make_calibrated_model(class_weight="balanced")
+    model_win.fit(df_train.loc[mask, win_model_cols], df_train.loc[mask, "top5"].astype(int))
+    p_top5_for_win = model_win.predict_proba(df_2026[win_model_cols])[:, 1]
+    results["p_won"] = derive_win_probability(p_top5_for_win)
+    print(f"  win (v7\u2192top5\u2192derived): max={results['p_won'].max():.3f}")
+
+    # Rank models (v8 features)
+    for target in ["top5", "top10", "finished"]:
+        mask = df_train[target].notna()
+        d = df_train[mask].copy()
+        y = d[target].astype(int)
+        n_pos = int(y.sum())
+        cw = "balanced" if target != "finished" else None
+        model = _make_calibrated_model(class_weight=cw)
+        model.fit(d[rank_model_cols], y)
+        p = model.predict_proba(df_2026[rank_model_cols])[:, 1]
+        results[f"p_{target}"] = p
+        print(f"  {target:>8s} (v8): {n_pos}/{len(d)} positive ({n_pos/len(d)*100:.1f}%), "
+              f"mean={p.mean():.3f}, max={p.max():.3f}")
+
+    # ---- Volatility score ----
+    results["volatility"] = compute_volatility(
+        df_2026, results["p_won"].values, results["p_top10"].values
+    )
+
+    # ---- Composite ranking ----
+    for target in ["won", "top5", "top10", "finished"]:
+        results[f"rank_{target}"] = results[f"p_{target}"].rank(ascending=False, method="min")
+
+    results["composite_rank"] = (
+        0.10 * results["rank_won"]
+        + 0.25 * results["rank_top5"]
+        + 0.40 * results["rank_top10"]
+        + 0.25 * results["rank_finished"]
+    )
+
+    results = results.sort_values("composite_rank").reset_index(drop=True)
+    results["predicted_rank"] = range(1, len(results) + 1)
+
+    # Rookie indicator
+    rookie_ids = set(
+        con.execute(
+            "SELECT musher_id FROM musher_strength WHERE year = 2026 AND is_rookie = 1"
+        ).df()["musher_id"].tolist()
+    )
+    injected_rookies = {"1155", "1069", "1103"}
+    rookie_ids = rookie_ids | injected_rookies
+    results["rookie"] = results["musher_id"].isin(rookie_ids).map({True: "R", False: ""})
+
+    # Display
+    display = results[[
+        "predicted_rank", "name", "rookie",
+        "p_won", "p_top5", "p_top10", "p_finished", "volatility",
+    ]].copy()
+    display.columns = ["Rank", "Musher", "R", "Win%", "Top5%", "Top10%", "Finish%", "Vol"]
+    for col in ["Win%", "Top5%", "Top10%", "Finish%"]:
+        display[col] = (display[col] * 100).round(1)
+
+    print("\n" + "=" * 85)
+    print("2026 IDITAROD PRE-RACE RANKINGS")
+    print("=" * 85)
+    print(f"Model: Calibrated Logistic Regression")
+    print(f"  Win%:        derived from P(Top 5) using {len(win_features)}-feature model (v7)")
+    print(f"  Top5/10/Fin: {len(rank_features)}-feature model (v8)")
+    print(f"  Volatility:  composite uncertainty score (0-100, higher = wider outcome range)")
+    print(f"Training: {args.train_start}\u2013{args.train_end} ({len(df_train)} musher-year observations)")
+    print(f"Field size: {len(results)} starters | R = Rookie")
+    print("-" * 85)
+    print(display.to_string(index=False))
+    print("-" * 85)
+
+    print(f"\nPredicted Top 5:")
+    for _, row in results.head(5).iterrows():
+        tag = " (R)" if row["rookie"] == "R" else ""
+        print(f"  {int(row['predicted_rank'])}. {row['name']}{tag} \u2014 "
+              f"Win: {row['p_won']*100:.1f}%, Top10: {row['p_top10']*100:.1f}%, "
+              f"Vol: {row['volatility']}")
+
+    # Highest volatility mushers
+    vol_top = results.nlargest(5, "volatility")
+    print(f"\nHighest Volatility (biggest wildcards):")
+    for _, row in vol_top.iterrows():
+        tag = " (R)" if row["rookie"] == "R" else ""
+        print(f"  #{int(row['predicted_rank'])} {row['name']}{tag} \u2014 "
+              f"Vol: {row['volatility']}, Win: {row['p_won']*100:.1f}%, "
+              f"Top10: {row['p_top10']*100:.1f}%")
+
+    top_rookie = results[results["rookie"] == "R"].head(1)
+    if not top_rookie.empty:
+        r = top_rookie.iloc[0]
+        print(f"\nTop Rookie: {r['name']} (predicted #{int(r['predicted_rank'])}) \u2014 "
+              f"Win: {r['p_won']*100:.1f}%, Top10: {r['p_top10']*100:.1f}%, "
+              f"Finish: {r['p_finished']*100:.1f}%, Vol: {r['volatility']}")
+
+    print(f"\nWin% sum: {results['p_won'].sum()*100:.1f}%")
+    for target, expected in [("top5", 5), ("top10", 10)]:
+        total = results[f"p_{target}"].sum()
+        print(f"Expected {target} count: {total:.1f} (target: ~{expected})")
+
+    if args.output:
+        out_df = results[[
+            "predicted_rank", "musher_id", "name", "rookie",
+            "p_won", "p_top5", "p_top10", "p_finished", "volatility", "composite_rank",
+        ]]
+        out_df.to_csv(args.output, index=False)
+        print(f"Saved to {args.output}")
+
+    # Markdown
+    print("\n\nMARKDOWN TABLE (for README):")
+    print("| Rank | Musher | Win% | Top 5% | Top 10% | Finish% | Volatility |")
+    print("|------|--------|------|--------|---------|---------|------------|")
+    for _, row in display.iterrows():
+        r_tag = " \U0001f539" if row["R"] == "R" else ""
+        print(f"| {int(row['Rank'])} | {row['Musher']}{r_tag} | "
+              f"{row['Win%']}% | {row['Top5%']}% | {row['Top10%']}% | "
+              f"{row['Finish%']}% | {row['Vol']} |")
+
+
+if __name__ == "__main__":
+    main()
