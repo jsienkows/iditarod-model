@@ -180,7 +180,7 @@ project/
 
 ```bash
 # Clone and install dependencies
-git clone https://github.com/yourusername/iditarod-model.git
+git clone https://github.com/jsienkows/iditarod-model.git
 cd iditarod-model/project
 pip install -r requirements.txt
 
