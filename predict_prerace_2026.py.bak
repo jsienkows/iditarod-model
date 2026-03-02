@@ -312,12 +312,6 @@ def main():
                 + 0.40 * te["rank_top10"]
                 + 0.25 * te["rank_finished"]
             )
-            te["contender_rank"] = (
-                0.282 * te["rank_won"]
-                + 0.263 * te["rank_top5"]
-                + 0.286 * te["rank_top10"]
-                + 0.169 * te["rank_finished"]
-            )
             te = te.sort_values("composite_rank").reset_index(drop=True)
             te["predicted_rank"] = range(1, len(te) + 1)
 
@@ -412,38 +406,15 @@ def main():
     for target in ["won", "top5", "top10", "finished"]:
         results[f"rank_{target}"] = results[f"p_{target}"].rank(ascending=False, method="min")
 
-    # ---- Dual composite ranking ----
-    # CONTENDER weights (ridge-learned on top-10 finishers, 16yr backtest):
-    #   Optimized for separating contenders from each other.
-    #   Win/Top5/Top10 carry roughly equal weight; Finish matters less
-    #   because top-10 mushers nearly all finish.
-    results["contender_rank"] = (
-        0.282 * results["rank_won"]
-        + 0.263 * results["rank_top5"]
-        + 0.286 * results["rank_top10"]
-        + 0.169 * results["rank_finished"]
-    )
-
-    # FIELD weights (original hand-tuned):
-    #   Optimized for full-field ranking accuracy.
-    #   Heavier on Top10 and Finish because those are the only signals
-    #   that meaningfully separate mid-pack from back-of-pack.
-    results["field_rank"] = (
+    results["composite_rank"] = (
         0.10 * results["rank_won"]
         + 0.25 * results["rank_top5"]
         + 0.40 * results["rank_top10"]
         + 0.25 * results["rank_finished"]
     )
 
-    # Primary sort: use field composite for overall ranking table
-    # (contender composite used separately for top-5 picks below)
-    results["composite_rank"] = results["field_rank"]
-
     results = results.sort_values("composite_rank").reset_index(drop=True)
     results["predicted_rank"] = range(1, len(results) + 1)
-
-    # Contender ranking: separate sort for top-of-field identification
-    results["contender_predicted_rank"] = results["contender_rank"].rank(ascending=True, method="min").astype(int)
 
     # Rookie indicator
     rookie_ids = set(
@@ -455,198 +426,73 @@ def main():
     rookie_ids = rookie_ids | injected_rookies
     results["rookie"] = results["musher_id"].isin(rookie_ids).map({True: "R", False: ""})
 
-    # ---- Pre-race Monte Carlo: prediction intervals on rank ----
-    # Perturbs probabilities on logit scale with per-musher noise,
-    # re-ranks across 10k sims to produce rank distributions.
-    from scipy.stats import rankdata as _rankdata
-
-    n_sims_prerace = 10000
-    rng = np.random.default_rng(42)
-
-    # Per-musher uncertainty multiplier (same as in-race #5)
-    # IMPORTANT: join on musher_id to avoid alignment issues after sorting
-    _unc_df = df_2026[["musher_id"]].copy()
-    _unc_df["_n_fin"] = pd.to_numeric(df_2026.get("n_finishes", 0), errors="coerce").fillna(0).values
-    _unc_df["_is_rook"] = pd.to_numeric(df_2026.get("is_rookie", 0), errors="coerce").fillna(0).values
-    _unc_df["_ysl"] = pd.to_numeric(df_2026.get("years_since_last_entry", 0), errors="coerce").fillna(0).values
-
-    _unc_raw = np.sqrt(8.0 / np.maximum(_unc_df["_n_fin"].values, 1.0))
-    _unc_raw = np.where(_unc_df["_is_rook"].values == 1, 1.8, _unc_raw)
-    _absence_add = np.minimum(np.maximum(_unc_df["_ysl"].values - 1, 0) * 0.05, 0.4)
-    _unc_df["unc_mult"] = np.clip(_unc_raw + _absence_add, 0.85, 2.0)
-
-    # Merge into results on musher_id so ordering is correct
-    results = results.merge(_unc_df[["musher_id", "unc_mult"]], on="musher_id", how="left")
-    results["unc_mult"] = results["unc_mult"].fillna(1.5)  # fallback for any mismatches
-    unc_mult = results["unc_mult"].values
-
-    def _logit(p):
-        p = np.clip(p, 1e-6, 1 - 1e-6)
-        return np.log(p / (1 - p))
-
-    def _sigmoid(x):
-        return 1.0 / (1.0 + np.exp(-x))
-
-    _logit_won = _logit(results["p_won"].values)
-    _logit_top5 = _logit(results["p_top5"].values)
-    _logit_top10 = _logit(results["p_top10"].values)
-    _logit_fin = _logit(results["p_finished"].values)
-
-    n_mushers = len(results)
-    _logit_noise_scale = 0.5 * unc_mult
-    _sim_ranks = np.zeros((n_sims_prerace, n_mushers), dtype=int)
-
-    for _sim in range(n_sims_prerace):
-        _noise = rng.normal(0, 1, (4, n_mushers)) * _logit_noise_scale[None, :]
-        _sp_won = _sigmoid(_logit_won + _noise[0])
-        _sp_top5 = _sigmoid(_logit_top5 + _noise[1])
-        _sp_top10 = _sigmoid(_logit_top10 + _noise[2])
-        _sp_fin = _sigmoid(_logit_fin + _noise[3])
-
-        _r_won = _rankdata(-_sp_won, method="min")
-        _r_top5 = _rankdata(-_sp_top5, method="min")
-        _r_top10 = _rankdata(-_sp_top10, method="min")
-        _r_fin = _rankdata(-_sp_fin, method="min")
-
-        _comp = 0.10 * _r_won + 0.25 * _r_top5 + 0.40 * _r_top10 + 0.25 * _r_fin
-        _sim_ranks[_sim] = _rankdata(_comp, method="min")
-
-    results["rank_p10"] = np.percentile(_sim_ranks, 10, axis=0).astype(int)
-    results["rank_p90"] = np.percentile(_sim_ranks, 90, axis=0).astype(int)
-    results["rank_ci"] = [
-        f"[{lo},{hi}]" for lo, hi in zip(results["rank_p10"], results["rank_p90"])
-    ]
-
-    print(f"\n  Pre-race Monte Carlo: {n_sims_prerace} sims, "
-          f"unc_mult range [{unc_mult.min():.2f}, {unc_mult.max():.2f}]")
-
-    # ==================================================================
-    # DISPLAY
-    # ==================================================================
-
-    # ---- 1. Field Ranking Table (sorted by field composite 10/25/40/25) ----
+    # Display
     display = results[[
         "predicted_rank", "name", "rookie",
-        "p_won", "p_top5", "p_top10", "p_finished", "rank_ci", "unc_mult",
+        "p_won", "p_top5", "p_top10", "p_finished", "volatility",
     ]].copy()
-    display.columns = ["Rank", "Musher", "R", "Win%", "Top5%", "Top10%", "Finish%", "80% CI", "Unc"]
+    display.columns = ["Rank", "Musher", "R", "Win%", "Top5%", "Top10%", "Finish%", "Vol"]
     for col in ["Win%", "Top5%", "Top10%", "Finish%"]:
         display[col] = (display[col] * 100).round(1)
-    display["Unc"] = display["Unc"].round(2)
 
-    print("\n" + "=" * 100)
-    print("2026 IDITAROD PRE-RACE RANKINGS (Field Composite: 10/25/40/25)")
-    print("=" * 100)
+    print("\n" + "=" * 85)
+    print("2026 IDITAROD PRE-RACE RANKINGS")
+    print("=" * 85)
     print(f"Model: Calibrated Logistic Regression")
     print(f"  Win%:        derived from P(Top 5) using {len(win_features)}-feature model (v7)")
     print(f"  Top5/10/Fin: {len(rank_features)}-feature model (v8)")
-    print(f"  80% CI:      prediction interval on rank from {n_sims_prerace}-sim Monte Carlo")
-    print(f"  Unc:         per-musher uncertainty multiplier (1.0 = baseline, 2.0 = max)")
+    print(f"  Volatility:  composite uncertainty score (0-100, higher = wider outcome range)")
     print(f"Training: {args.train_start}\u2013{args.train_end} ({len(df_train)} musher-year observations)")
     print(f"Field size: {len(results)} starters | R = Rookie")
-    print("-" * 100)
+    print("-" * 85)
     print(display.to_string(index=False))
-    print("-" * 100)
+    print("-" * 85)
 
-    # ---- 2. Full Contender Ranking (sorted by contender composite 28/26/29/17) ----
-    contender_sorted = results.sort_values("contender_rank").reset_index(drop=True)
-    contender_sorted["contender_predicted_rank"] = range(1, len(contender_sorted) + 1)
-
-    print(f"\n{'='*100}")
-    print("CONTENDER RANKING (28/26/29/17) vs FIELD RANKING (10/25/40/25)")
-    print(f"{'='*100}")
-    print(f"{'C#':>3} {'F#':>3} {'D':>4} | {'Musher':<22} {'R':>1} | "
-          f"{'Win%':>5} {'T5%':>5} {'T10%':>5} {'Fin%':>5} | {'80% CI':>8} {'Unc':>4}")
-    print("-" * 100)
-
-    for _, row in contender_sorted.iterrows():
-        c_rank = int(row["contender_predicted_rank"])
-        f_rank = int(row["predicted_rank"])
-        delta = f_rank - c_rank
-
-        if delta > 0:
-            d_str = f"+{delta}"
-        elif delta < 0:
-            d_str = f"{delta}"
-        else:
-            d_str = "="
-
-        r_tag = "R" if row["rookie"] == "R" else ""
-
-        print(f"{c_rank:>3} {f_rank:>3} {d_str:>4} | {row['name']:<22} {r_tag:>1} | "
-              f"{row['p_won']*100:>5.1f} {row['p_top5']*100:>5.1f} "
-              f"{row['p_top10']*100:>5.1f} {row['p_finished']*100:>5.1f} | "
-              f"{row['rank_ci']:>8} {row['unc_mult']:>4.2f}")
-
-    print("-" * 100)
-
-    # Biggest movers between composites
-    contender_sorted["_delta"] = contender_sorted["predicted_rank"] - contender_sorted["contender_predicted_rank"]
-    big_up = contender_sorted[contender_sorted["_delta"] >= 3].sort_values("_delta", ascending=False)
-    big_down = contender_sorted[contender_sorted["_delta"] <= -3].sort_values("_delta")
-
-    if not big_up.empty or not big_down.empty:
-        print(f"\nBiggest movers (field -> contender rank):")
-        for _, row in big_up.iterrows():
-            print(f"  ^ {row['name']}: field #{int(row['predicted_rank'])} -> contender #{int(row['contender_predicted_rank'])} "
-                  f"(+{int(row['_delta'])} spots) \u2014 Win%={row['p_won']*100:.1f}")
-        for _, row in big_down.iterrows():
-            print(f"  v {row['name']}: field #{int(row['predicted_rank'])} -> contender #{int(row['contender_predicted_rank'])} "
-                  f"({int(row['_delta'])} spots) \u2014 Fin%={row['p_finished']*100:.1f}")
-    contender_sorted.drop(columns=["_delta"], inplace=True, errors="ignore")
-
-    # ---- 3. Predicted Top 5 (contender composite) ----
-    contender_top5 = results.nsmallest(5, "contender_rank")
-    print(f"\nPredicted Top 5 (contender composite: 28/26/29/17):")
-    for i, (_, row) in enumerate(contender_top5.iterrows(), 1):
+    print(f"\nPredicted Top 5:")
+    for _, row in results.head(5).iterrows():
         tag = " (R)" if row["rookie"] == "R" else ""
-        f_rank = int(row["predicted_rank"])
-        print(f"  {i}. {row['name']}{tag} \u2014 "
+        print(f"  {int(row['predicted_rank'])}. {row['name']}{tag} \u2014 "
               f"Win: {row['p_won']*100:.1f}%, Top10: {row['p_top10']*100:.1f}%, "
-              f"80% CI: {row['rank_ci']}  [field rank: #{f_rank}]")
+              f"Vol: {row['volatility']}")
 
-    # ---- 4. Biggest Wildcards (widest prediction intervals) ----
-    wild_top = results.nlargest(5, "unc_mult")
-    print(f"\nBiggest Wildcards (widest prediction intervals):")
-    for _, row in wild_top.iterrows():
+    # Highest volatility mushers
+    vol_top = results.nlargest(5, "volatility")
+    print(f"\nHighest Volatility (biggest wildcards):")
+    for _, row in vol_top.iterrows():
         tag = " (R)" if row["rookie"] == "R" else ""
         print(f"  #{int(row['predicted_rank'])} {row['name']}{tag} \u2014 "
-              f"80% CI: {row['rank_ci']}, Unc: {row['unc_mult']:.2f}, "
-              f"Win: {row['p_won']*100:.1f}%, Top10: {row['p_top10']*100:.1f}%")
+              f"Vol: {row['volatility']}, Win: {row['p_won']*100:.1f}%, "
+              f"Top10: {row['p_top10']*100:.1f}%")
 
-    # ---- 5. Top Rookie ----
     top_rookie = results[results["rookie"] == "R"].head(1)
     if not top_rookie.empty:
         r = top_rookie.iloc[0]
         print(f"\nTop Rookie: {r['name']} (predicted #{int(r['predicted_rank'])}) \u2014 "
               f"Win: {r['p_won']*100:.1f}%, Top10: {r['p_top10']*100:.1f}%, "
-              f"Finish: {r['p_finished']*100:.1f}%, 80% CI: {r['rank_ci']}")
+              f"Finish: {r['p_finished']*100:.1f}%, Vol: {r['volatility']}")
 
-    # ---- 6. Calibration checks ----
     print(f"\nWin% sum: {results['p_won'].sum()*100:.1f}%")
     for target, expected in [("top5", 5), ("top10", 10)]:
         total = results[f"p_{target}"].sum()
         print(f"Expected {target} count: {total:.1f} (target: ~{expected})")
 
-    # ---- 7. CSV output ----
     if args.output:
         out_df = results[[
             "predicted_rank", "musher_id", "name", "rookie",
-            "p_won", "p_top5", "p_top10", "p_finished",
-            "unc_mult", "rank_ci", "composite_rank", "contender_rank",
+            "p_won", "p_top5", "p_top10", "p_finished", "volatility", "composite_rank",
         ]]
         out_df.to_csv(args.output, index=False)
         print(f"Saved to {args.output}")
 
-    # ---- 8. Markdown table (for README) ----
+    # Markdown
     print("\n\nMARKDOWN TABLE (for README):")
-    print("| Rank | Musher | Win% | Top 5% | Top 10% | Finish% | 80% CI | Unc |")
-    print("|------|--------|------|--------|---------|---------|--------|-----|")
+    print("| Rank | Musher | Win% | Top 5% | Top 10% | Finish% | Volatility |")
+    print("|------|--------|------|--------|---------|---------|------------|")
     for _, row in display.iterrows():
         r_tag = " \U0001f539" if row["R"] == "R" else ""
         print(f"| {int(row['Rank'])} | {row['Musher']}{r_tag} | "
               f"{row['Win%']}% | {row['Top5%']}% | {row['Top10%']}% | "
-              f"{row['Finish%']}% | {row['80% CI']} | {row['Unc']} |")
+              f"{row['Finish%']}% | {row['Vol']} |")
 
 
 if __name__ == "__main__":

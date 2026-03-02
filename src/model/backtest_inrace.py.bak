@@ -151,17 +151,13 @@ def _simulate_predictions(
         max_ft = 300.0
     dnf_penalty = max_ft + 500.0
 
-    # Log-normal noise (multiplicative, right-skewed)
-    T_mean = np.nanmean(pred_finish_hours)
-    sigma_log = sigma_hours / T_mean if T_mean > 0 else 0.1
+    shared_sigma = sigma_hours * np.sqrt(shared_frac)
+    indiv_sigma = sigma_hours * np.sqrt(1.0 - shared_frac)
 
-    shared_sigma_log = sigma_log * np.sqrt(shared_frac)
-    indiv_sigma_log = sigma_log * np.sqrt(1.0 - shared_frac)
+    shared = rng.normal(0, shared_sigma, (n_sims, 1))
+    indiv = rng.normal(0, indiv_sigma, (n_sims, len(X)))
 
-    shared_noise = rng.normal(-shared_sigma_log**2 / 2, shared_sigma_log, (n_sims, 1))
-    indiv_noise = rng.normal(-indiv_sigma_log**2 / 2, indiv_sigma_log, (n_sims, len(X)))
-
-    sim_finish = pred_finish_hours[None, :] * np.exp(shared_noise + indiv_noise)
+    sim_finish = pred_finish_hours[None, :] + shared + indiv
     u = rng.random((n_sims, len(X)))
     sim_is_finish = u < p_finish[None, :]
     sim_finish = np.where(sim_is_finish, sim_finish, dnf_penalty)

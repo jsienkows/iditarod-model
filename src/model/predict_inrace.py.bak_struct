@@ -20,36 +20,6 @@ import joblib
 from src.db import connect
 
 
-def _compute_uncertainty_multiplier(
-    n_finishes, is_rookie, years_since_last=None,
-    base_n=8.0, max_mult=2.0, min_mult=0.85, rookie_mult=1.8,
-    absence_bonus_per_year=0.05, max_absence_bonus=0.4,
-):
-    """
-    Per-musher uncertainty multiplier for Monte Carlo noise scaling.
-
-    More races = more certainty = less noise. Rookies and returning
-    mushers get wider distributions.
-
-    Returns array of multipliers (>1 = wider, <1 = narrower than baseline).
-    """
-    n_fin = np.asarray(n_finishes, dtype=float)
-    rookie = np.asarray(is_rookie, dtype=float)
-
-    mult = np.sqrt(base_n / np.maximum(n_fin, 1.0))
-    mult = np.where(rookie == 1, rookie_mult, mult)
-
-    if years_since_last is not None:
-        ysl = np.asarray(years_since_last, dtype=float)
-        absence_years = np.maximum(ysl - 1, 0)
-        absence_add = np.minimum(absence_years * absence_bonus_per_year, max_absence_bonus)
-        mult = mult + absence_add
-
-    return np.clip(mult, min_mult, max_mult)
-
-
-
-
 def _prior_decay_weight(checkpoint_order: int) -> float:
     """
     Hyperbolic decay: weight on the full (prior-including) model.
@@ -431,48 +401,34 @@ def main():
         max_ft = 0.0
     dnf_penalty_hours = max_ft + 500.0
 
-    # ---- Per-musher structural uncertainty ----
-    # Extract musher history from snapshot data (joined from musher_strength)
-    n_finishes = pd.to_numeric(df.get("n_finishes", 0), errors="coerce").fillna(0).values
-    is_rookie = pd.to_numeric(df.get("is_rookie", 0), errors="coerce").fillna(0).values
-    ysl = pd.to_numeric(df.get("years_since_last_entry", 0), errors="coerce").fillna(0).values
-
-    unc_mult = _compute_uncertainty_multiplier(n_finishes, is_rookie, ysl)
-
-    # Log-normal noise with per-musher scaling
-    # Shared noise (weather/trail, same for all mushers)
-    # Individual noise scaled by uncertainty multiplier per musher
+    # Correlated log-normal noise: shared + individual
+    # Log-normal is multiplicative: sim_time = T * exp(noise)
+    # This ensures: always positive, right-skewed (slowdowns more likely than speedups)
+    #
+    # Convert sigma from hours to log-space: sigma_log ~ sigma_hours / T_mean
+    # Bias correction -sigma^2/2 ensures E[exp(noise)] = 1, so E[sim_time] = T
     T_mean = np.nanmean(pred_finish_time_hours)
-    if T_mean <= 0 or not np.isfinite(T_mean):
-        T_mean = 240.0
+    sigma_log = sigma_hours / T_mean if T_mean > 0 else 0.1
 
-    shared_sigma_log = np.clip(sigma_hours * np.sqrt(shared_frac) / T_mean, 0.01, 0.3)
+    shared_sigma_log = sigma_log * np.sqrt(shared_frac)
+    indiv_sigma_log = sigma_log * np.sqrt(1.0 - shared_frac)
 
-    # Per-musher individual sigma in log-space
-    indiv_sigma_base = sigma_hours * np.sqrt(1.0 - shared_frac)
-    indiv_sigma_per_musher = indiv_sigma_base * unc_mult  # (n_mushers,)
-    indiv_sigma_log = np.clip(indiv_sigma_per_musher / T_mean, 0.01, 0.5)
-
-    # Shared noise (bias-corrected for log-normal)
     shared_noise = rng.normal(
-        -shared_sigma_log**2 / 2, shared_sigma_log, (args.n_sims, 1)
+        loc=-shared_sigma_log**2 / 2, scale=shared_sigma_log, size=(args.n_sims, 1)
     )
-
-    # Individual noise: per-musher sigma (bias-corrected)
     indiv_noise = rng.normal(
-        -indiv_sigma_log**2 / 2,   # per-musher bias correction
-        indiv_sigma_log,             # per-musher sigma
-        size=(args.n_sims, len(df)),
+        loc=-indiv_sigma_log**2 / 2, scale=indiv_sigma_log, size=(args.n_sims, len(df))
     )
 
     sim_finish = pred_finish_time_hours[None, :] * np.exp(shared_noise + indiv_noise)
 
-    # Apply finish probabilities -> some sims convert to DNF penalty
+    # Apply finish probabilities → some sims convert to DNF penalty
     u = rng.random(size=(args.n_sims, len(df)))
     sim_is_finish = u < p_finish[None, :]
     sim_finish = np.where(sim_is_finish, sim_finish, dnf_penalty_hours)
 
     # Places: argsort per sim
+    # place 1 = smallest time
     order = np.argsort(sim_finish, axis=1)
     ranks = np.empty_like(order)
     rows = np.arange(args.n_sims)[:, None]
@@ -481,11 +437,7 @@ def main():
 
     p_win = (place == 1).mean(axis=0)
     p_top10 = (place <= 10).mean(axis=0)
-    exp_place = place.mean(axis=0).astype(float)
-
-    # Prediction intervals (80% CI on finishing position)
-    place_p10 = np.percentile(place, 10, axis=0).astype(int)
-    place_p90 = np.percentile(place, 90, axis=0).astype(int)
+    exp_place = place.mean(axis=0)
 
     out = df[["year", "checkpoint_order", "musher_id", "asof_time_utc", "rank_at_checkpoint"]].copy()
     out["p_finish"] = p_finish
@@ -494,14 +446,10 @@ def main():
     out["p_win"] = p_win
     out["p_top10"] = p_top10
     out["exp_place"] = exp_place
-    out["place_p10"] = place_p10
-    out["place_p90"] = place_p90
-    out["unc_mult"] = unc_mult
 
-    # Readability columns
+    # Readability columns (so tiny probs aren't printed as 0.00000)
     out["p_win_pct"] = 100.0 * out["p_win"]
     out["p_top10_pct"] = 100.0 * out["p_top10"]
-    out["place_ci"] = [f"[{lo},{hi}]" for lo, hi in zip(place_p10, place_p90)]
 
     print(
         f"\nIn-race predictions | year={args.year} cp={args.checkpoint_order} | "
