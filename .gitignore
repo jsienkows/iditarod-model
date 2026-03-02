@@ -36,3 +36,5 @@ models/*.json
 cd
 for
 python
+*.bak 
+*.bak_* 
