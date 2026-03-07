@@ -36,17 +36,16 @@ from src.db import connect
 ROOKIE_SCORES = {
     "1166": 5,   # Jesse Terry — 3x Canadian Challenge champion, 3rd Beargrease, 3rd YQ450
     "1167": 4,   # Kevin Hansen — 2nd Kobuk 440 (behind Iditarod champ Holmes)
-    "1115": 3,   # Jaye Foucher — 3rd Can-Am 250, 6th UP200, 8th Beargrease
-    "1168": 3,   # Jody Potts-Joseph — 7th Kobuk 440
-    "1170": 2,   # Sam Paperman — 9th Kobuk 440
-    "1171": 2,   # Sadie Lindquist — 8th Kobuk 440
+    "1168": 2,   # Jody Potts-Joseph — 7th Kobuk 440, heart-and-finish musher, not pushing for top
+    "1164": 3,   # Adam Lindenmuth — CB300 + Kobuk + YQ300, won several qualifiers, strong prep
+    "1069": 3,   # Richie Beattie — Made it to Nome in 2019 (WD on technicality), real trail experience
     "1163": 2,   # Joseph Sabin — Finished YQA 550, young team
-    "1164": 2,   # Adam Lindenmuth — CB300 + Kobuk + YQ300, dedicated prep
+    "1115": 2,   # Jaye Foucher — Mixed Siberian/Alaskan team, not racing aggressively
+    "1103": 2,   # Brenda Mackey — Prior exits were dog illness/emergency not ability, 3rd attempt, capable
     "1155": 1,   # Sydnie Bahl — Withdrawn from 2025 Iditarod (Rule 36), second attempt
-    "1169": 1,   # Sam Martin — No major results found, Failor kennel connection
-    "1165": 1,   # Kjell Rokke — Swiss, no English-language results found
-    "1069": 1,   # Richie Beattie — 2019 Iditarod scratch, 7 year gap
-    "1103": 1,   # Brenda Mackey — 2021 scratch (Nikolai), 2025 DQ (Tanana), Mackey dynasty
+    "1169": 1,   # Sam Martin — Failor kennel, conservative pacer
+    "1170": 1,   # Sam Paperman — Running Turning Heads Kennel puppy team, not racing competitively
+    "1171": 1,   # Sadie Lindquist — Running Mitch Seavey puppy team, not racing competitively
 }
 
 # ─────────────────────────────────────────────────────────
@@ -94,6 +93,8 @@ BASELINE = {
     "peak_pct_top10":          0.0,
     "peak_pct_top5":           0.0,
     "peak_pct_win":            0.0,
+    "w_avg_time_behind_winner_seconds": 110000.0,  # ~30.5 hours behind winner (median rookie)
+    "w_n_entries":             0.7,   # roughly one entry with decay
     # trajectory features — keep NaN since there's no "prior year" to compare
     # career_race_number stays at 1 (first Iditarod)
 }
@@ -131,6 +132,15 @@ SCORE_TO_FINISH_PCT = {
     3: 0.75,   # near baseline
     2: 0.70,
     1: 0.55,   # high scratch risk
+}
+
+# Time behind winner in seconds (calibrated to finish place)
+SCORE_TO_TIME_BEHIND = {
+    5: 85000,   # ~23.6 hrs — competitive rookie
+    4: 95000,   # ~26.4 hrs
+    3: 110000,  # ~30.5 hrs — median rookie
+    2: 120000,  # ~33.3 hrs
+    1: 135000,  # ~37.5 hrs — back of pack
 }
 
 
@@ -172,6 +182,9 @@ def build_rookie_row(musher_id: str, score: int) -> dict:
         "cons_pct_finished", "cons_last5_pct_finished", "cons_w_pct_finished",
     ]:
         row[key] = finish_pct
+
+    # Adjust time behind winner
+    row["w_avg_time_behind_winner_seconds"] = float(SCORE_TO_TIME_BEHIND[score])
 
     return row
 
@@ -250,6 +263,7 @@ def main():
         "exp_n_entries", "exp_n_finishes", "exp_n_years", "exp_w_entries",
         "peak_best_finish_place", "peak_pct_top10", "peak_pct_top5", "peak_pct_win",
         "cons_pct_finished", "cons_last5_pct_finished", "cons_w_pct_finished",
+        "w_avg_time_behind_winner_seconds", "w_n_entries",
     ]
 
     for row in rows:

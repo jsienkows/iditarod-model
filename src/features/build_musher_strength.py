@@ -113,7 +113,7 @@ def _ensure_out_has_columns(out: pd.DataFrame, cols_defaults: dict) -> pd.DataFr
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--year", type=int, required=True, help="Target race year to build pre-race strength features for")
-    ap.add_argument("--lookback", type=int, default=10, help="How many prior years to use (default: 10)")
+    ap.add_argument("--lookback", type=int, default=20, help="How many prior years to use (default: 20)")
     args = ap.parse_args()
 
     year = args.year

@@ -4,50 +4,50 @@ A machine learning system for predicting outcomes of the Iditarod Trail Sled Dog
 
 ## 2026 Pre-Race Rankings
 
+Rankings use the **contender composite** (28% win + 26% top 5 + 29% top 10 + 17% finish), which outperforms the field composite at identifying the actual winner in backtesting (winner in top 3: 82% of years by win%, vs 55% by field composite).
+
 | Rank | Musher | Win% | Top 5% | Top 10% | Finish% | 80% CI | Unc |
 |------|--------|------|--------|---------|---------|--------|-----|
-| 1 | Jessie Holmes | 11.9% | 50.3% | 73.0% | 90.0% | [1,5] | 1.0 |
-| 2 | Matt Hall | 8.7% | 46.3% | 70.4% | 89.7% | [1,6] | 1.07 |
-| 3 | Paige Drobny | 7.0% | 42.8% | 68.1% | 88.0% | [1,8] | 1.07 |
-| 4 | Michelle Phillips | 5.7% | 44.2% | 68.0% | 86.0% | [2,9] | 1.07 |
-| 5 | Travis Beals | 6.9% | 35.8% | 63.2% | 86.0% | [2,10] | 1.0 |
-| 6 | Ryan Redington | 5.9% | 29.2% | 57.8% | 86.8% | [3,11] | 1.07 |
-| 7 | Mille Porsild | 5.7% | 26.7% | 55.3% | 87.4% | [3,12] | 1.15 |
-| 8 | Thomas Waerner 🔸 | 28.3% | 35.6% | 29.7% | 89.5% | [3,16] | 2.0 |
-| 9 | Bailey Vitello | 0.3% | 20.4% | 49.2% | 86.7% | [5,16] | 1.63 |
-| 10 | Peter Kaiser | 5.0% | 21.1% | 41.8% | 85.9% | [6,15] | 1.05 |
-| 11 | Wade Marrs | 6.9% | 23.9% | 38.5% | 83.4% | [6,16] | 1.25 |
-| 12 | Jessie Royer | 2.1% | 19.3% | 38.6% | 85.1% | [7,16] | 1.05 |
-| 13 | Josi (Thyr) Shelley | 0.6% | 17.8% | 38.2% | 82.7% | [6,20] | 2.0 |
-| 14 | Chad Stoddard | 4.0% | 19.4% | 30.1% | 81.1% | [7,20] | 2.0 |
-| 15 | Jeff Deeter | 0.3% | 11.5% | 36.2% | 79.0% | [11,20] | 1.26 |
-| 16 | Jesse Terry 🔹 | 0.0% | 5.1% | 10.7% | 84.9% | [15,28] | 1.8 |
-| 17 | Jason Mackey | 0.0% | 7.1% | 21.4% | 82.8% | [14,23] | 1.26 |
-| 18 | Lauro Eklund | 0.0% | 7.7% | 24.6% | 81.2% | [11,25] | 2.0 |
-| 19 | Riley Dyche | 0.1% | 9.5% | 31.4% | 78.4% | [12,22] | 1.41 |
-| 20 | Kevin Hansen 🔹 | 0.0% | 3.8% | 8.2% | 84.3% | [17,29] | 1.8 |
-| 21 | Hanna Lyrek | 0.2% | 11.4% | 19.7% | 80.5% | [11,24] | 2.0 |
-| 22 | Keaton Loebrich | 0.0% | 7.6% | 24.4% | 79.1% | [12,25] | 2.0 |
-| 23 | Jody Potts-Joseph 🔹 | 0.0% | 2.4% | 5.4% | 82.8% | [20,32] | 1.8 |
-| 24 | Jaye Foucher 🔹 | 0.0% | 2.4% | 5.4% | 82.8% | [20,33] | 1.8 |
-| 25 | Gabe Dunham | 0.0% | 5.5% | 21.7% | 71.0% | [15,27] | 2.0 |
-| 26 | Adam Lindenmuth 🔹 | 0.0% | 1.6% | 3.7% | 82.0% | [22,34] | 1.8 |
-| 27 | Sam Paperman 🔹 | 0.0% | 1.6% | 3.7% | 82.0% | [22,34] | 1.8 |
-| 28 | Sadie Lindquist 🔹 | 0.0% | 1.6% | 3.7% | 82.0% | [22,34] | 1.8 |
-| 29 | Joseph Sabin 🔹 | 0.0% | 1.6% | 3.7% | 82.0% | [22,34] | 1.8 |
-| 30 | Grayson Bruton | 0.0% | 4.2% | 6.4% | 60.2% | [21,33] | 2.0 |
-| 31 | Sydnie Bahl 🔹 | 0.0% | 0.8% | 1.1% | 82.9% | [26,36] | 2.0 |
-| 32 | Rohn Buser | 0.0% | 2.4% | 0.4% | 81.0% | [24,35] | 2.0 |
-| 33 | Brenda Mackey 🔹 | 0.0% | 0.8% | 1.0% | 83.5% | [26,36] | 2.0 |
-| 34 | Sam Martin 🔹 | 0.0% | 1.0% | 2.5% | 79.1% | [25,36] | 1.8 |
-| 35 | Kjell Rokke 🔹 | 0.0% | 1.0% | 2.5% | 79.1% | [25,35] | 1.8 |
-| 36 | Richie Beattie 🔹 | 0.0% | 1.2% | 0.4% | 81.7% | [27,36] | 2.0 |
+| 1 | Jessie Holmes | 15.6% | 50.3% | 73.0% | 90.0% | [1,4] | 1.0 |
+| 2 | Matt Hall | 11.4% | 46.3% | 70.4% | 89.7% | [1,5] | 1.07 |
+| 3 | Paige Drobny | 9.9% | 44.7% | 68.5% | 86.4% | [1,7] | 0.89 |
+| 4 | Travis Beals | 8.5% | 36.7% | 62.6% | 84.4% | [3,9] | 0.85 |
+| 5 | Michelle Phillips | 7.3% | 47.0% | 67.3% | 82.6% | [2,8] | 0.85 |
+| 6 | Ryan Redington | 8.1% | 30.3% | 58.1% | 85.7% | [3,10] | 0.94 |
+| 7 | Mille Porsild | 7.5% | 26.7% | 55.3% | 87.4% | [3,11] | 1.15 |
+| 8 | Peter Kaiser | 9.3% | 25.3% | 44.4% | 82.1% | [6,14] | 0.85 |
+| 9 | Wade Marrs | 10.3% | 26.1% | 39.7% | 80.3% | [7,15] | 0.99 |
+| 10 | Bailey Vitello | 0.4% | 20.4% | 49.2% | 86.7% | [5,16] | 1.63 |
+| 11 | Jessie Royer | 4.2% | 24.1% | 41.5% | 80.1% | [8,16] | 0.85 |
+| 12 | Josi (Thyr) Shelley | 0.9% | 17.8% | 38.2% | 82.7% | [6,20] | 2.0 |
+| 13 | Chad Stoddard | 5.3% | 19.4% | 30.1% | 81.1% | [7,21] | 2.0 |
+| 14 | Jesse Terry 🔹 | 0.2% | 11.5% | 40.8% | 78.5% | [8,21] | 1.8 |
+| 15 | Jeff Deeter | 0.5% | 11.8% | 36.3% | 78.3% | [11,20] | 1.15 |
+| 16 | Riley Dyche | 0.1% | 9.5% | 31.4% | 78.4% | [12,23] | 1.41 |
+| 17 | Hanna Lyrek | 0.2% | 11.4% | 19.7% | 80.5% | [11,25] | 2.0 |
+| 18 | Lauro Eklund | 0.0% | 7.7% | 24.6% | 81.2% | [11,26] | 2.0 |
+| 19 | Kevin Hansen 🔹 | 0.0% | 8.0% | 33.0% | 77.0% | [11,24] | 1.8 |
+| 20 | Keaton Loebrich | 0.1% | 7.6% | 24.4% | 79.1% | [12,26] | 2.0 |
+| 21 | Jason Mackey | 0.0% | 7.2% | 20.8% | 81.2% | [15,24] | 1.0 |
+| 22 | Gabe Dunham | 0.0% | 5.5% | 21.7% | 71.0% | [15,29] | 2.0 |
+| 23 | Adam Lindenmuth 🔹 | 0.0% | 4.4% | 22.0% | 73.8% | [16,29] | 1.8 |
+| 24 | Richie Beattie 🔹 | 0.0% | 3.9% | 3.5% | 79.6% | [21,33] | 2.0 |
+| 25 | Joseph Sabin 🔹 | 0.0% | 2.7% | 14.9% | 71.9% | [20,32] | 1.8 |
+| 26 | Jaye Foucher 🔹 | 0.0% | 2.7% | 14.9% | 71.9% | [20,32] | 1.8 |
+| 27 | Jody Potts-Joseph 🔹 | 0.0% | 2.7% | 14.9% | 71.9% | [19,32] | 1.8 |
+| 28 | Rohn Buser | 0.0% | 4.1% | 1.6% | 73.0% | [24,33] | 2.0 |
+| 29 | Grayson Bruton | 0.0% | 4.2% | 6.4% | 60.2% | [23,33] | 2.0 |
+| 30 | Brenda Mackey 🔹 | 0.0% | 2.4% | 8.4% | 76.5% | [21,33] | 2.0 |
+| 31 | Sadie Lindquist 🔹 | 0.0% | 1.6% | 9.7% | 66.7% | [24,34] | 1.8 |
+| 32 | Sam Paperman 🔹 | 0.0% | 1.6% | 9.7% | 66.7% | [24,34] | 1.8 |
+| 33 | Sam Martin 🔹 | 0.0% | 1.6% | 9.7% | 66.7% | [24,34] | 1.8 |
+| 34 | Sydnie Bahl 🔹 | 0.0% | 1.5% | 5.5% | 71.7% | [24,34] | 2.0 |
 
-🔹 Rookie &nbsp;&nbsp; 🔸 High-uncertainty contender
+🔹 Rookie
 
-**80% CI** is the prediction interval on finishing rank from a 10,000-draw Monte Carlo simulation that perturbs each musher's probabilities with noise scaled by their uncertainty multiplier. **Unc** (uncertainty multiplier) ranges from 0.85 for veterans with 8+ finishes to 2.0 for mushers with thin race history or long absences. Mushers with wider intervals are more likely to significantly over- or under-perform their predicted rank.
+**80% CI** is the prediction interval from 10,000-sim Monte Carlo — the range where the model expects each musher to finish 80% of the time. **Unc** (uncertainty multiplier) ranges from 0.85 to 2.0 based on career history depth; higher values mean wider prediction intervals.
 
-Thomas Waerner is the most polarizing musher in the field: he has the highest raw win probability (28.3%) but only 29.7% top-10 rate, reflecting a boom-or-bust profile. His Unc of 2.0 (only 1 Iditarod finish plus a 6-year absence) gives him the widest prediction interval [3,16] of any top-10 musher.
+**Note on expedition mushers:** Thomas Waerner, Kjell Rokke, and Steve Curtis are competing as non-competitive expedition class mushers and have been excluded from rankings. Waerner was initially ranked with a field-leading 28.3% win probability based on his 2020 championship, but has confirmed he will be traveling at a non-competitive pace alongside expedition musher Rokke.
 
 ## How It Works
 
@@ -59,12 +59,11 @@ Predicts each musher's probability of winning, finishing top 5, top 10, and fini
 - Calibrated Logistic Regression with target-specific feature sets
 - **Win probability**: derived from P(top 5) using a 9-feature model (v7), then sharpened via power function and normalized to sum to 100%
 - **Top 5 / Top 10 / Finish probability**: 10-feature model (v8) adding last year's finish position
-- **Composite ranking**: two weighted blends of per-target probability ranks:
-  - *Field composite* (10/25/40/25): optimized for full-field ranking accuracy
-  - *Contender composite* (28/26/29/17): ridge-optimized for top-10 separation, used for headline top-5 picks
-- **Prediction intervals**: 10,000-draw Monte Carlo with per-musher uncertainty scaling based on career history depth
+- **Contender ranking**: weighted blend of per-target probability ranks (28% win + 26% top 5 + 29% top 10 + 17% finish) — optimized for identifying the winner
+- **Field ranking**: alternative composite (10% win + 25% top 5 + 40% top 10 + 25% finish) — optimized for overall field accuracy
+- **Prediction intervals**: 10,000-draw Monte Carlo simulation perturbing probabilities on logit scale with per-musher noise scaled by uncertainty multiplier
 
-**Features** (exponentially decay-weighted over career, λ=0.70):
+**Features** (exponentially decay-weighted over career, λ=0.70, 20-year lookback):
 
 | Feature | Description |
 |---------|-------------|
@@ -87,10 +86,9 @@ Predicts each musher's probability of winning, finishing top 5, top 10, and fini
 | P@5 | 0.545 | Of predicted top 5, how many actually finished top 5 |
 | P@10 | 0.618 | Of predicted top 10, how many actually finished top 10 |
 | Spearman | 0.668 | Rank correlation: predicted vs actual finish order |
-| Winner in top 3 | 54.5% (6/11) | Actual winner ranked in composite top 3 |
-| Winner in top 5 | 90.9% (10/11) | Actual winner ranked in composite top 5 |
-
-All metrics are evaluated on the **composite ranking** (the same blended ranking used for final predictions).
+| Winner in top 3 (composite) | 54.5% (6/11) | Actual winner ranked in composite top 3 |
+| Winner in top 5 (composite) | 90.9% (10/11) | Actual winner ranked in composite top 5 |
+| Winner in top 3 (win%) | 81.8% (9/11) | Actual winner in top 3 by raw win probability |
 
 ### In-Race Model
 
@@ -99,9 +97,9 @@ Updates predictions at each checkpoint using live race data. As the race progres
 **Architecture:**
 - HistGradientBoosting regressor for remaining time prediction
 - HistGradientBoosting classifier for finish probability
-- Log-normal Monte Carlo simulation (20,000 draws) with per-musher uncertainty scaling
-- **Prior decay blending**: checkpoint-dependent mix of full model (with career priors) and snapshot-only model (race data only), following hyperbolic decay w = 1/(1 + checkpoint). Priors dominate early (50% at CP1) and fade to near-zero by mid-race (9% at CP10), matching the empirical crossover where race data becomes more predictive than career history
-- **Structural uncertainty**: per-musher noise scaling in the simulation — veterans with 8+ finishes get tighter distributions, rookies and thin-history mushers get wider ones, producing honest prediction intervals
+- Dual-model blending: full model (with priors) and snapshot-only model (no priors), blended via prior decay weight that decreases as race progresses
+- Log-normal simulation (20,000 draws) with per-musher structural uncertainty for position distributions
+- Pre-race priors blended in early checkpoints, fading as race data accumulates
 
 **Key in-race features:** current position, pace vs. field median, gap to leader/10th place, cumulative rest, dogs remaining, leg-over-leg speed trends, pre-race musher strength, and race progress percentage.
 
@@ -113,19 +111,11 @@ project/
 ├── inject_rookie_strength.py          # Assign synthetic strength priors to rookies
 ├── match_2026_mushers.py              # Match 2026 entrants to musher database IDs
 ├── rebuild_pipeline.sh                # Full pipeline rebuild (features → models → backtest)
+├── setup_2026_race.bat                # One-time pre-race setup (Windows)
+├── update_inrace.bat                  # Live race update pipeline (Windows)
 ├── rankings_2026.csv                  # Final 2026 pre-race rankings output
 ├── requirements.txt
 ├── .gitignore
-│
-├── improvements/                      # Model improvement analyses & patches
-│   ├── train_snapshot_models.py       # Train snapshot-only models for prior decay
-│   ├── 1_ridge_stacking.py            # Ridge meta-learner for composite weights
-│   ├── 2_lognormal_noise.py           # Log-normal vs Gaussian noise comparison
-│   ├── 3_bootstrap_ci.py              # Bootstrap confidence intervals on metrics
-│   ├── 4_prior_decay_calibration.py   # Prior value diagnostic by checkpoint
-│   ├── 5_structural_uncertainty.py    # Per-musher uncertainty multiplier library
-│   ├── SUMMARY.md                     # Full writeup of all improvements
-│   └── patch_*.py                     # Auto-patchers for production code
 │
 ├── src/
 │   ├── db.py                          # DuckDB connection & schema definition
@@ -143,7 +133,7 @@ project/
 │   │   └── download_one_page.py
 │   │
 │   ├── features/                      # Feature engineering
-│   │   ├── build_musher_strength.py   # Pre-race musher features (60+ columns incl. Bayesian shrinkage)
+│   │   ├── build_musher_strength.py   # Pre-race musher features (60+ columns, 20yr lookback, λ=0.70 decay)
 │   │   ├── build_snapshots.py         # In-race checkpoint-level features
 │   │   ├── build_historical_results.py# Unified historical results table
 │   │   ├── checkpoint_distances.py    # Checkpoint → race progress % mapping
@@ -167,20 +157,28 @@ project/
 │       ├── add_new_snapshot_columns.py
 │       └── add_gap_leg_delta_to_snapshots.py
 │
+├── improvements/                      # Model improvement patches & analysis
+│   ├── SUMMARY.md                     # Changelog of all improvements
+│   ├── train_snapshot_models.py       # Train snapshot-only models for blending
+│   └── patch_*.py                     # Various improvement patches
+│
 ├── data/
 │   ├── noaa_iditarod_weather.csv      # Historical race-week weather data
 │   └── db/                            # DuckDB database (gitignored)
 │
-└── models/                            # Trained model artifacts (gitignored)
-    ├── inrace_*_model.joblib          # Full in-race models (with priors)
-    └── inrace_*_snapshot.joblib       # Snapshot-only models (for prior decay)
+└── models/                            # Trained model artifacts
+    ├── inrace_finish_model.joblib
+    ├── inrace_remaining_time_model.joblib
+    ├── inrace_finish_model_snapshot.joblib
+    ├── inrace_remaining_time_model_snapshot.joblib
+    └── inrace_metadata.json
 ```
 
 ## Setup
 
 ```bash
 # Clone and install dependencies
-git clone https://github.com/jsienkows/iditarod-model.git
+git clone https://github.com/yourusername/iditarod-model.git
 cd iditarod-model/project
 pip install -r requirements.txt
 
@@ -198,6 +196,16 @@ python inject_rookie_strength.py --write
 python predict_prerace_2026.py --output rankings_2026.csv
 ```
 
+## Race Day Usage
+
+```bash
+# One-time pre-race setup
+setup_2026_race.bat
+
+# After each checkpoint (wait for leaders to depart):
+update_inrace.bat CHECKPOINT_NUMBER
+```
+
 ## Data
 
 All data is scraped from the [official Iditarod website](https://iditarod.com). The DuckDB database is not included in the repository but can be fully reconstructed by running the scraping and pipeline steps above.
@@ -208,13 +216,19 @@ Historical coverage: **2006–2025** (20 years, ~1,200 musher-year observations)
 
 **Exponential decay weighting** (λ=0.70): Recent races count more than old ones. A race from 5 years ago gets ~17% the weight of last year's race. This balances recency with career body of work.
 
-**Target-specific feature sets**: The win model uses 9 features (excluding `last_year_finish_place`) because it yields better winner identification in backtesting (82% in top 3 vs 64%). The ranking models add `last_year_finish_place` for better group identification (P@5 = 0.545 vs 0.436).
+**20-year lookback window**: Musher strength features are computed over a 20-year window (effectively the full dataset back to 2006). This ensures returning mushers with long absences still have their full history available, while exponential decay handles recency.
 
-**Calibrated probabilities**: All models use Platt scaling (sigmoid calibration with 5-fold CV) so predicted probabilities are well-calibrated — a musher predicted at 30% P(top 10) should finish top 10 roughly 30% of the time.
+**Dual composite rankings**: The contender composite (28/26/29/17) weights win probability more heavily and is better at identifying the actual winner (top-3 hit rate: 82% by win% vs 55% by field composite). The field composite (10/25/40/25) produces better overall rank ordering across the full field.
 
-**Bayesian shrinkage features**: `musher_strength` includes shrinkage estimates that pull small-sample statistics toward population base rates (k=5 pseudo-observations). These don't improve the ML model (which already learns sample-size adjustments via `n_finishes`) but are useful for direct display and volatility scoring.
+**Target-specific feature sets**: The win model uses 9 features (excluding `last_year_finish_place`) because it yields better winner identification in backtesting. The ranking models add `last_year_finish_place` for better group identification.
 
-**Rookie handling**: Rookies have no historical data, so `inject_rookie_strength.py` assigns synthetic priors based on qualification scores (1–5 scale mapped to estimated finish distributions).
+**Calibrated probabilities**: All models use Platt scaling (sigmoid calibration with 5-fold CV) so predicted probabilities are well-calibrated.
+
+**Prediction intervals**: Monte Carlo simulation (10,000 draws) perturbs each musher's probabilities on a logit scale with noise proportional to their uncertainty multiplier. Mushers with thin career histories get wider intervals. The 80% CI shows the 10th–90th percentile of simulated finishing positions.
+
+**Rookie handling**: Rookies have no Iditarod history, so `inject_rookie_strength.py` assigns synthetic priors based on qualification scores (1–5 scale) mapped to estimated finish distributions including `w_avg_time_behind_winner_seconds`, the model's most predictive feature. Scores are informed by qualifying race results, kennel affiliations, and pre-race reporting.
+
+**In-race prior blending**: The in-race model uses dual-model blending — a full model incorporating pre-race musher strength priors and a snapshot-only model using purely in-race features. A prior decay weight smoothly transitions from prior-heavy early in the race to snapshot-dominant as checkpoint data accumulates. Log-normal noise and per-musher structural uncertainty produce realistic prediction intervals.
 
 ## License
 
