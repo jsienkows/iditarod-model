@@ -135,12 +135,14 @@ def main():
         tbody = table.find("tbody") or table
         rows = tbody.find_all("tr")
 
-        def get_cell(cells, wanted_norm_names):
+        def get_cell(cells, wanted_norm_names, occurrence=1):
+            count = 0
             for wanted in wanted_norm_names:
-                if wanted in headers_norm:
-                    idx = headers_norm.index(wanted)
-                    if idx < len(cells):
-                        return cells[idx]
+                for idx, h in enumerate(headers_norm):
+                    if h == wanted and idx < len(cells):
+                        count += 1
+                        if count == occurrence:
+                            return cells[idx]
             return ""
 
         inserted_here = 0
@@ -157,12 +159,22 @@ def main():
                 continue
 
             place = clean_text(get_cell(cells, ["place", "rank"]))
-            in_t = clean_text(get_cell(cells, ["in"]))
-            out_t = clean_text(get_cell(cells, ["out"]))
-            rest = clean_text(get_cell(cells, ["rest", "rest time"]))
-            enrt = clean_text(get_cell(cells, ["time en route", "en route", "time enroute"]))
-            dogs_in = clean_text(get_cell(cells, ["dogs in"]))
-            dogs_out = clean_text(get_cell(cells, ["dogs out", "dogs"]))
+
+            # Detect 2026+ multi-row header format (13+ data cells, 9 headers)
+            if len(cells) >= 13 and len(headers_norm) > len(cells):
+                in_t = clean_text(cells[2]) if len(cells) > 2 else ""
+                dogs_in = clean_text(cells[3]) if len(cells) > 3 else ""
+                out_t = clean_text(cells[4]) if len(cells) > 4 else ""
+                dogs_out = clean_text(cells[5]) if len(cells) > 5 else ""
+                rest = clean_text(cells[6]) if len(cells) > 6 else ""
+                enrt = clean_text(cells[7]) if len(cells) > 7 else ""
+            else:
+                in_t = clean_text(get_cell(cells, ["in"]))
+                out_t = clean_text(get_cell(cells, ["out"]))
+                rest = clean_text(get_cell(cells, ["rest", "rest time"]))
+                enrt = clean_text(get_cell(cells, ["time en route", "en route", "time enroute"]))
+                dogs_in = clean_text(get_cell(cells, ["dogs in", "dogs"]))
+                dogs_out = clean_text(get_cell(cells, ["dogs out", "dogs"]))
 
             rank = int(place) if (place and place.isdigit()) else None
 

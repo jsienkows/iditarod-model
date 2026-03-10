@@ -102,13 +102,19 @@ def main():
     tbody = table.find("tbody") or table
     rows = tbody.find_all("tr")
 
-    def get(cells, wanted_norm_names):
-        """Find a cell value by fuzzy normalized header."""
+    def get(cells, wanted_norm_names, occurrence=1):
+        """Find a cell value by fuzzy normalized header.
+        
+        occurrence: which match to return (1=first, 2=second, etc.)
+        Useful for duplicate column names like 'Dogs', 'Dogs'.
+        """
+        count = 0
         for wanted in wanted_norm_names:
-            if wanted in headers_norm:
-                idx = headers_norm.index(wanted)
-                if idx < len(cells):
-                    return cells[idx]
+            for idx, h in enumerate(headers_norm):
+                if h == wanted and idx < len(cells):
+                    count += 1
+                    if count == occurrence:
+                        return cells[idx]
         return ""
 
     inserted = 0
@@ -130,8 +136,14 @@ def main():
         out_t = get(cells, ["out"])
         rest = get(cells, ["rest", "rest time"])
         enrt = get(cells, ["time en route", "en route", "time enroute"])
-        dogs_in = get(cells, ["dogs in"])
-        dogs_out = get(cells, ["dogs out", "dogs"])
+       # Handle 2026+ format: two "Dogs" columns (prev checkpoint, current)
+        n_dogs_cols = sum(1 for h in headers_norm if h == "dogs")
+        if n_dogs_cols >= 2:
+            dogs_in = get(cells, ["dogs"], occurrence=2)
+            dogs_out = get(cells, ["dogs"], occurrence=2)
+        else:
+            dogs_in = get(cells, ["dogs in", "dogs"])
+            dogs_out = get(cells, ["dogs out", "dogs"])
 
         rank = int(place) if str(place).isdigit() else None
 

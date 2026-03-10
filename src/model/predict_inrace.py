@@ -48,6 +48,31 @@ def _compute_uncertainty_multiplier(
     return np.clip(mult, min_mult, max_mult)
 
 
+def _decay_uncertainty_multiplier(unc_mult, checkpoint_order, checkpoint_pct=None, max_cp=27):
+    """
+    Decay pre-race uncertainty multiplier toward 1.0 as race data accumulates.
+
+    Early race: unc_mult stays close to pre-race value (thin-history mushers
+    get wide distributions). Late race: converges to 1.0 (in-race data speaks
+    for itself, everyone gets similar noise).
+
+    race_pct: fraction of race completed (0 to 1)
+    unc_mult decayed = 1.0 + (unc_mult - 1.0) * (1 - race_pct)
+
+    Examples for a musher with pre-race unc_mult=2.0:
+      CP4  (~16%): 2.0 -> 1.84
+      CP8  (~32%): 2.0 -> 1.68
+      CP13 (~50%): 2.0 -> 1.50
+      CP18 (~72%): 2.0 -> 1.28
+      CP22 (~88%): 2.0 -> 1.12
+    """
+    if checkpoint_pct is not None and np.isfinite(checkpoint_pct) and 0 < checkpoint_pct <= 1:
+        race_pct = checkpoint_pct
+    else:
+        race_pct = min(checkpoint_order / max_cp, 1.0)
+
+    decay_factor = 1.0 - race_pct
+    return 1.0 + (unc_mult - 1.0) * decay_factor
 
 
 def _prior_decay_weight(checkpoint_order: int) -> float:
@@ -438,6 +463,18 @@ def main():
     ysl = pd.to_numeric(df.get("years_since_last_entry", 0), errors="coerce").fillna(0).values
 
     unc_mult = _compute_uncertainty_multiplier(n_finishes, is_rookie, ysl)
+
+    # Override: during in-race, trust race data over career history depth
+    unc_mult = np.ones_like(unc_mult)
+
+    # ---- Decay unc_mult toward 1.0 as race progresses ----
+    # By mid-race, in-race data is more informative than career history depth.
+    # A thin-history musher at CP15 has 15 checkpoints of real data — we should
+    # be nearly as confident about their range as any veteran.
+    cp_pct_for_unc = pd.to_numeric(df.get("checkpoint_pct"), errors="coerce")
+    cp_pct_val_unc = float(cp_pct_for_unc.dropna().iloc[0]) if (cp_pct_for_unc is not None and not cp_pct_for_unc.dropna().empty) else None
+    unc_mult_raw = unc_mult.copy()
+    unc_mult = _decay_uncertainty_multiplier(unc_mult, args.checkpoint_order, cp_pct_val_unc)
 
     # Log-normal noise with per-musher scaling
     # Shared noise (weather/trail, same for all mushers)

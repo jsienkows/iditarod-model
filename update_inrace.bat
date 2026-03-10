@@ -1,53 +1,43 @@
 @echo off
-REM update_inrace.bat — Scrape, parse, build features, and predict for a given checkpoint.
-REM
-REM Usage:
-REM   update_inrace.bat 10        (predict at checkpoint 10)
-REM   update_inrace.bat 15        (predict at checkpoint 15)
+:: =============================================================
+::  Iditarod 2026 — In-Race Update Pipeline
+::  Usage: update_inrace.bat CHECKPOINT_NUMBER
+::  Example: update_inrace.bat 5
+:: =============================================================
 
-setlocal
-
-set YEAR=2026
-set CP=%1
-
-if "%CP%"=="" (
-    echo Usage: update_inrace.bat CHECKPOINT_ORDER
-    echo Example: update_inrace.bat 10
+if "%~1"=="" (
+    echo Usage: update_inrace.bat CHECKPOINT_NUMBER
     exit /b 1
 )
 
+set CP=%~1
+
 echo.
 echo ============================================================
-echo  Iditarod %YEAR% In-Race Update — Checkpoint %CP%
+echo  Updating predictions through checkpoint %CP%
 echo ============================================================
-echo.
 
-echo [1/4] Scraping checkpoint data...
-python -m src.scrape.scrape_all_checkpoints --year_min %YEAR% --year_max %YEAR%
-if errorlevel 1 goto :error
 echo.
+echo [1/5] Scraping latest checkpoint data...
+python -m src.scrape.scrape_all_checkpoints --year 2026
 
-echo [2/4] Parsing HTML to splits...
-python -m src.scrape.parse_all_checkpoints --year_min %YEAR% --year_max %YEAR%
-if errorlevel 1 goto :error
 echo.
+echo [2/5] Parsing HTML into splits table...
+python -m src.scrape.parse_all_checkpoints --year 2026
 
-echo [3/4] Building snapshots...
-python -m src.features.build_snapshots --year %YEAR%
-if errorlevel 1 goto :error
 echo.
+echo [3/5] Updating checkpoint distances...
+python -m src.features.checkpoint_distances --year 2026
 
-echo [4/4] Running predictions for checkpoint %CP%...
-python -m src.model.predict_inrace --year %YEAR% --checkpoint_order %CP%
-if errorlevel 1 goto :error
 echo.
+echo [4/5] Rebuilding snapshots...
+python -m src.features.build_snapshots --year 2026
 
+echo.
+echo [5/5] Running predictions for checkpoint %CP%...
+python -m src.model.predict_inrace --year 2026 --checkpoint_order %CP%
+
+echo.
 echo ============================================================
-echo  Done. Predictions saved to models\pred_inrace_%YEAR%_cp%CP%.csv
+echo  Done. Predictions updated through checkpoint %CP%.
 echo ============================================================
-exit /b 0
-
-:error
-echo.
-echo ERROR: Pipeline failed at the step above.
-exit /b 1
