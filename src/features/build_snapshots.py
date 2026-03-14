@@ -77,17 +77,23 @@ def build_snapshots_for_year(con, year: int, max_leg_seconds: int = DEFAULT_MAX_
         .min()
     )
 
-    splits["start_time_utc"] = splits["musher_id"].map(start_times)
+    # Use a common race start time (earliest musher's start) so that
+    # cum_elapsed_seconds is on a shared clock. This prevents staggered
+    # start offsets (2-min intervals by bib) from distorting rankings,
+    # gap calculations, and pace features.
+    common_start = start_times.min()
+    splits["start_time_utc"] = common_start
 
     # Drop mushers where we can't determine restart-anchored start_time
     splits = splits[splits["start_time_utc"].notna()].copy()
 
-    splits["cum_elapsed_seconds"] = (splits["asof_time_utc"] - splits["start_time_utc"]).dt.total_seconds()
+    # Use in_time_utc (arrival time) for cumulative elapsed, not asof_time_utc
+    # (which includes rest time). This prevents mushers who rest strategically
+    # from appearing "slower" than mushers who haven't rested yet.
+    splits["cum_elapsed_seconds"] = (splits["in_time_utc"] - splits["start_time_utc"]).dt.total_seconds()
 
-    # Optional but recommended: don’t allow negative elapsed at early checkpoints
+    # Don't allow negative elapsed at early checkpoints
     splits.loc[splits["cum_elapsed_seconds"] < 0, "cum_elapsed_seconds"] = 0
-
-    splits["cum_elapsed_seconds"] = (splits["asof_time_utc"] - splits["start_time_utc"]).dt.total_seconds()
 
     splits["prev_asof_time_utc"] = splits.groupby(["musher_id"])["asof_time_utc"].shift(1)
     splits["last_leg_seconds"] = (splits["asof_time_utc"] - splits["prev_asof_time_utc"]).dt.total_seconds()
@@ -115,9 +121,12 @@ def build_snapshots_for_year(con, year: int, max_leg_seconds: int = DEFAULT_MAX_
     splits.loc[use_calc, "time_en_route_seconds"] = calc_enroute[use_calc]
     splits["time_en_route_seconds"] = splits["time_en_route_seconds"].fillna(splits["last_leg_seconds"])
 
-    # --- Rank features (1 = leader) using cum_elapsed_seconds ---
+    # --- Rank features (1 = leader) using absolute arrival time ---
+    # Use in_time_utc (wall clock) not cum_elapsed_seconds, because
+    # cum_elapsed is relative to each musher's own start time and doesn't
+    # account for staggered starts (2-min intervals by bib number).
     splits["rank_at_checkpoint"] = (
-        splits.groupby(["year", "checkpoint_order"])["cum_elapsed_seconds"]
+        splits.groupby(["year", "checkpoint_order"])["in_time_utc"]
         .rank(method="min")
         .astype("Int64")
     )

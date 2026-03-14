@@ -56,10 +56,19 @@ def parse_time_to_utc(s: str, year: int, default_dt=None):
 
 def parse_duration_to_seconds(s: str):
     """
-    Handles "HH:MM" or "HH:MM:SS".
+    Handles "HH:MM", "HH:MM:SS", and "Xh Ym" formats.
     """
     s = (s or "").strip()
-    if not s or ":" not in s:
+    if not s:
+        return None
+    
+    # Handle "Xh Ym" format (2026+)
+    m_hm = re.match(r"(\d+)h\s*(\d+)m", s)
+    if m_hm:
+        return int(m_hm.group(1)) * 3600 + int(m_hm.group(2)) * 60
+    
+    # Handle "HH:MM" or "HH:MM:SS"
+    if ":" not in s:
         return None
     parts = s.split(":")
     try:

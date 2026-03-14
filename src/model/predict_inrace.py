@@ -2,11 +2,12 @@
 Generate live in-race predictions from trained models.
 
 Loads the HistGradientBoosting finish and remaining-time models, runs
-Monte Carlo simulation (5,000 draws) at each checkpoint, and outputs
+Monte Carlo simulation (20,000 draws) at each checkpoint, and outputs
 P(win), P(top10), P(finish), and expected finish position for each musher.
 
 Usage:
-    python -m src.model.predict_inrace --year 2025 --checkpoint 15
+    python -m src.model.predict_inrace --year 2026 --checkpoint_order 8
+    python -m src.model.predict_inrace --year 2026 --latest
 """
 
 import argparse
@@ -18,6 +19,9 @@ import pandas as pd
 import joblib
 
 from src.db import connect
+
+# Non-competitive expedition mushers to exclude from predictions
+EXPEDITION_MUSHER_IDS = ["994", "1165"]  # Thomas Waerner, Kjell Rokke
 
 
 def _compute_uncertainty_multiplier(
@@ -51,20 +55,6 @@ def _compute_uncertainty_multiplier(
 def _decay_uncertainty_multiplier(unc_mult, checkpoint_order, checkpoint_pct=None, max_cp=27):
     """
     Decay pre-race uncertainty multiplier toward 1.0 as race data accumulates.
-
-    Early race: unc_mult stays close to pre-race value (thin-history mushers
-    get wide distributions). Late race: converges to 1.0 (in-race data speaks
-    for itself, everyone gets similar noise).
-
-    race_pct: fraction of race completed (0 to 1)
-    unc_mult decayed = 1.0 + (unc_mult - 1.0) * (1 - race_pct)
-
-    Examples for a musher with pre-race unc_mult=2.0:
-      CP4  (~16%): 2.0 -> 1.84
-      CP8  (~32%): 2.0 -> 1.68
-      CP13 (~50%): 2.0 -> 1.50
-      CP18 (~72%): 2.0 -> 1.28
-      CP22 (~88%): 2.0 -> 1.12
     """
     if checkpoint_pct is not None and np.isfinite(checkpoint_pct) and 0 < checkpoint_pct <= 1:
         race_pct = checkpoint_pct
@@ -80,17 +70,23 @@ def _prior_decay_weight(checkpoint_order: int) -> float:
     Hyperbolic decay: weight on the full (prior-including) model.
     w = 1 / (1 + checkpoint_order)
 
-    CP  1 -> w = 0.500 (priors get half weight)
-    CP  5 -> w = 0.167
-    CP 10 -> w = 0.091
-    CP 15 -> w = 0.062
-    CP 20 -> w = 0.048
-
     Returns the weight for the FULL model. Snapshot-only gets (1 - w).
     """
     return 1.0 / (1.0 + checkpoint_order)
 
 
+def _finish_prior_decay_weight(checkpoint_order: int, checkpoint_pct: float | None = None) -> float:
+    """
+    Slow decay for finish probability priors.
+    NOTE: Currently unused (needs post-race calibration). Kept for future use.
+    """
+    if checkpoint_pct is not None and np.isfinite(checkpoint_pct) and 0 < checkpoint_pct <= 1:
+        race_pct = checkpoint_pct
+    else:
+        race_pct = min(checkpoint_order / 27.0, 1.0)
+
+    w = max(0.05, 0.85 - 0.80 * race_pct)
+    return w
 
 
 DEFAULT_MODEL_DIR = "models"
@@ -102,25 +98,13 @@ MAX_CHECKPOINT_ORDER = 27
 def _checkpoint_dependent_sigma_floor(checkpoint_order: int, checkpoint_pct: float | None = None) -> float:
     """
     Dynamic sigma floor that decreases as mushers progress through the race.
-
-    Logic: uncertainty should shrink as the race progresses. A 10-hour noise
-    floor is reasonable at CP4 (early race) but absurd at CP22 (near finish).
-
-    If checkpoint_pct is available (fraction of race distance completed, 0→1),
-    use it directly. Otherwise fall back to checkpoint_order heuristic.
-
-    Returns sigma_floor_hours.
     """
     if checkpoint_pct is not None and np.isfinite(checkpoint_pct) and 0 < checkpoint_pct <= 1:
         remaining_pct = 1.0 - checkpoint_pct
     else:
-        # Fallback: rough linear mapping from checkpoint_order
         remaining_pct = max(0.0, 1.0 - checkpoint_order / MAX_CHECKPOINT_ORDER)
 
-    # Scale floor from ~12h (0% complete) down to ~1.5h (95%+ complete)
-    # Using a sqrt curve so it stays higher longer then drops fast near finish
     floor = 1.5 + 10.5 * np.sqrt(max(remaining_pct, 0.0))
-
     return float(floor)
 
 
@@ -134,29 +118,17 @@ def _load_metadata(model_dir: Path) -> dict:
 def _extract_sigma_hours_from_metadata(meta: dict, checkpoint_order: int) -> float:
     """
     Best-effort sigma_hours selection.
-
-    Priority:
-      0) sigma_hours_by_cp for this checkpoint (preferred; from residual fitting)
-      1) per_checkpoint_metrics for this checkpoint (rmse_hours)
-      2) remaining_time_metrics remaining_rmse_seconds
-      3) implied_finish_time_rmse_seconds (as fallback)
-      4) default constant
     """
     if meta is None:
         return 48.0
 
     rtm = (meta.get("remaining_time_metrics") or {})
 
-    # 0) preferred: sigma from residuals (fit_inrace_sigma.py)
-    # Support either:
-    #   - meta["remaining_time_metrics"]["sigma_hours_by_cp"]
-    #   - meta["sigma_hours_by_cp"]  (top-level)
     sigma_by_cp = rtm.get("sigma_hours_by_cp")
     if not isinstance(sigma_by_cp, dict):
         sigma_by_cp = meta.get("sigma_hours_by_cp")
 
     if isinstance(sigma_by_cp, dict):
-        # JSON keys are often strings, so try both int and str keys
         for k in (str(int(checkpoint_order)), int(checkpoint_order)):
             if k in sigma_by_cp:
                 try:
@@ -166,7 +138,6 @@ def _extract_sigma_hours_from_metadata(meta: dict, checkpoint_order: int) -> flo
                 except Exception:
                     pass
 
-    # 1) checkpoint-specific RMSE (legacy fallback)
     per_cp = rtm.get("per_checkpoint_metrics")
     if isinstance(per_cp, list):
         for row in per_cp:
@@ -180,7 +151,6 @@ def _extract_sigma_hours_from_metadata(meta: dict, checkpoint_order: int) -> flo
             except Exception:
                 continue
 
-    # 2) overall remaining rmse seconds
     rmse_sec = rtm.get("remaining_rmse_seconds")
     if rmse_sec is not None:
         try:
@@ -190,7 +160,6 @@ def _extract_sigma_hours_from_metadata(meta: dict, checkpoint_order: int) -> flo
         except Exception:
             pass
 
-    # 3) implied finish-time rmse seconds
     rmse_ft_sec = rtm.get("implied_finish_time_rmse_seconds")
     if rmse_ft_sec is not None:
         try:
@@ -200,7 +169,6 @@ def _extract_sigma_hours_from_metadata(meta: dict, checkpoint_order: int) -> flo
         except Exception:
             pass
 
-    # 4) conservative default
     return 48.0
 
 
@@ -211,12 +179,7 @@ def _coerce_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return df
 
 
-def _load_snapshots_for_cp(con, year: int, checkpoint_order: int) -> pd.DataFrame:
-    # Pull exactly one row per musher at that checkpoint,
-    # joined with musher_strength for pre-race priors.
-    df = con.execute(
-        """
-        SELECT
+_SNAPSHOT_COLUMNS = """
           s.year,
           s.checkpoint_order,
           s.checkpoint_pct,
@@ -254,6 +217,14 @@ def _load_snapshots_for_cp(con, year: int, checkpoint_order: int) -> pd.DataFram
           ms.last_year_improvement,
           -- Year/race context
           CASE WHEN r.route_regime IN ('northern') THEN 1 ELSE 0 END AS is_northern_route
+"""
+
+
+def _load_snapshots_for_cp(con, year: int, checkpoint_order: int) -> pd.DataFrame:
+    """Pull exactly one row per musher at a specific checkpoint."""
+    df = con.execute(
+        f"""
+        SELECT {_SNAPSHOT_COLUMNS}
         FROM snapshots s
         LEFT JOIN musher_strength ms
           ON s.year = ms.year AND s.musher_id = ms.musher_id
@@ -268,6 +239,31 @@ def _load_snapshots_for_cp(con, year: int, checkpoint_order: int) -> pd.DataFram
     return df
 
 
+def _load_latest_snapshots(con, year: int) -> pd.DataFrame:
+    """Pull each musher's most recent checkpoint snapshot."""
+    df = con.execute(
+        f"""
+        WITH latest AS (
+            SELECT musher_id, MAX(checkpoint_order) AS max_cp
+            FROM snapshots
+            WHERE year = ?
+            GROUP BY musher_id
+        )
+        SELECT {_SNAPSHOT_COLUMNS}
+        FROM snapshots s
+        INNER JOIN latest l
+          ON s.musher_id = l.musher_id AND s.checkpoint_order = l.max_cp AND s.year = ?
+        LEFT JOIN musher_strength ms
+          ON s.year = ms.year AND s.musher_id = ms.musher_id
+        LEFT JOIN races r
+          ON s.year = r.year
+        ORDER BY s.checkpoint_order DESC, s.rank_at_checkpoint NULLS LAST, s.musher_id
+        """,
+        [year, year],
+    ).df()
+    return df
+
+
 def _predict_remaining_seconds(
     reg_model,
     X: pd.DataFrame,
@@ -276,9 +272,7 @@ def _predict_remaining_seconds(
     """
     Supports:
       - global regressor (single sklearn model)
-      - per-checkpoint bundle dict with keys:
-          {"mode": ..., "per_checkpoint": {int: model}, "fallback": model|None}
-      - legacy per-checkpoint dict[int, regressor]
+      - per-checkpoint bundle dict
       - None (returns NaN)
     Returns (pred_remaining_seconds, reg_model_used)
     """
@@ -286,7 +280,6 @@ def _predict_remaining_seconds(
         return np.full(len(X), np.nan), "missing"
 
     if isinstance(reg_model, dict):
-        # New bundle format (from train_inrace_model per_checkpoint mode)
         per_cp = reg_model.get("per_checkpoint", reg_model)
         fallback = reg_model.get("fallback", None)
 
@@ -297,14 +290,12 @@ def _predict_remaining_seconds(
             pred_sec = np.clip(pred_sec, 0, None)
             return pred_sec, "per_checkpoint"
 
-        # Try fallback (global model trained on all data)
         if fallback is not None:
             pred_log = fallback.predict(X)
             pred_sec = np.expm1(pred_log)
             pred_sec = np.clip(pred_sec, 0, None)
             return pred_sec, "per_checkpoint_fallback(global)"
 
-        # Legacy: try closest available cp
         cp_keys = sorted([int(k) for k in per_cp.keys() if isinstance(k, (int, np.integer))])
         if cp_keys:
             nearest = min(cp_keys, key=lambda k: abs(k - int(checkpoint_order)))
@@ -323,23 +314,49 @@ def _predict_remaining_seconds(
     return pred_sec, "global"
 
 
+def _predict_remaining_seconds_mixed(
+    reg_model, X: pd.DataFrame, checkpoint_orders: np.ndarray,
+) -> tuple[np.ndarray, str]:
+    """
+    For --latest mode: mushers are at different checkpoints.
+    Use global model (which handles checkpoint_pct as a feature).
+    """
+    if reg_model is None:
+        return np.full(len(X), np.nan), "missing"
+
+    if isinstance(reg_model, dict):
+        fallback = reg_model.get("fallback", None)
+        if fallback is not None:
+            pred_log = fallback.predict(X)
+            pred_sec = np.expm1(pred_log)
+            pred_sec = np.clip(pred_sec, 0, None)
+            return pred_sec, "global_fallback(mixed_cp)"
+
+    # Single global model
+    pred_log = reg_model.predict(X)
+    pred_sec = np.expm1(pred_log)
+    pred_sec = np.clip(pred_sec, 0, None)
+    return pred_sec, "global(mixed_cp)"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--year", type=int, required=True)
-    ap.add_argument("--checkpoint_order", type=int, required=True)
+    ap.add_argument("--checkpoint_order", type=int, default=None,
+                    help="Specific checkpoint to predict from")
+    ap.add_argument("--latest", action="store_true",
+                    help="Use each musher's most recent checkpoint (overrides --checkpoint_order)")
     ap.add_argument("--n_sims", type=int, default=20000)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--model_dir", type=str, default=DEFAULT_MODEL_DIR)
 
-    # Updated defaults: better-behaved sims out of the box
     ap.add_argument(
         "--sigma_floor_hours",
         type=float,
         default=None,
         help=(
             "Lower bound on sigma_hours used in sims (after metadata lookup). "
-            "If None (default), uses a checkpoint-dependent floor that scales with "
-            "remaining race distance: ~10h early, ~2h late."
+            "If None (default), uses a checkpoint-dependent floor."
         ),
     )
     ap.add_argument(
@@ -356,6 +373,11 @@ def main():
     )
 
     args = ap.parse_args()
+
+    if not args.latest and args.checkpoint_order is None:
+        ap.error("Either --checkpoint_order or --latest must be specified")
+
+    use_latest = args.latest
 
     model_dir = Path(args.model_dir)
 
@@ -376,16 +398,43 @@ def main():
     reg_model = joblib.load(reg_path)
 
     con = connect()
-    df = _load_snapshots_for_cp(con, year=args.year, checkpoint_order=args.checkpoint_order)
 
-    if df.empty:
-        raise RuntimeError(f"No snapshot rows found for year={args.year}, checkpoint_order={args.checkpoint_order}")
+    # ---- Load data ----
+    if use_latest:
+        df = _load_latest_snapshots(con, year=args.year)
+        if df.empty:
+            raise RuntimeError(f"No snapshot rows found for year={args.year}")
+
+        # Remove non-competitive expedition mushers
+        n_before = len(df)
+        df = df[~df["musher_id"].isin(EXPEDITION_MUSHER_IDS)].reset_index(drop=True)
+        n_removed = n_before - len(df)
+        if n_removed > 0:
+            print(f"  Removed {n_removed} expedition musher(s)")
+
+        cp_orders = pd.to_numeric(df["checkpoint_order"], errors="coerce").values
+        representative_cp = int(np.median(cp_orders))
+        max_cp = int(np.max(cp_orders))
+        min_cp = int(np.min(cp_orders))
+        print(f"  Latest mode: {len(df)} mushers across CP {min_cp}–{max_cp} (median CP {representative_cp})")
+    else:
+        df = _load_snapshots_for_cp(con, year=args.year, checkpoint_order=args.checkpoint_order)
+        if df.empty:
+            raise RuntimeError(f"No snapshot rows found for year={args.year}, checkpoint_order={args.checkpoint_order}")
+
+        # Remove non-competitive expedition mushers
+        n_before = len(df)
+        df = df[~df["musher_id"].isin(EXPEDITION_MUSHER_IDS)].reset_index(drop=True)
+        n_removed = n_before - len(df)
+        if n_removed > 0:
+            print(f"  Removed {n_removed} expedition musher(s)")
+
+        representative_cp = args.checkpoint_order
+        cp_orders = np.full(len(df), args.checkpoint_order)
 
     # Ensure features exist + numeric
     X = df.copy()
     X = _coerce_numeric(X, feature_cols)
-
-    # Important: only pass the feature columns to model
     Xf = X[feature_cols].copy()
 
     # ---- Prior decay: blend full + snapshot-only predictions ----
@@ -401,23 +450,43 @@ def main():
 
     # Full model predictions (with priors)
     p_finish_full = finish_model.predict_proba(Xf)[:, 1]
-    pred_remaining_sec_full, reg_used = _predict_remaining_seconds(reg_model, Xf, args.checkpoint_order)
+
+    if use_latest:
+        pred_remaining_sec_full, reg_used = _predict_remaining_seconds_mixed(
+            reg_model, Xf, cp_orders
+        )
+    else:
+        pred_remaining_sec_full, reg_used = _predict_remaining_seconds(
+            reg_model, Xf, args.checkpoint_order
+        )
 
     if use_prior_decay:
-        # Snapshot-only predictions (no priors)
         snap_finish_model = joblib.load(snap_finish_path)
         snap_reg_model = joblib.load(snap_reg_path)
         Xf_snap = X[snapshot_only_cols].copy()
 
         p_finish_snap = snap_finish_model.predict_proba(Xf_snap)[:, 1]
-        # Snapshot regressor is always global (not per-checkpoint bundle)
         snap_pred_log = snap_reg_model.predict(Xf_snap)
         pred_remaining_sec_snap = np.clip(np.expm1(snap_pred_log), 0, None)
 
-        w = _prior_decay_weight(args.checkpoint_order)
-        p_finish = w * p_finish_full + (1 - w) * p_finish_snap
-        pred_remaining_sec = w * pred_remaining_sec_full + (1 - w) * pred_remaining_sec_snap
-        print(f"  Prior decay: w_full={w:.3f}, w_snap={1-w:.3f} at CP {args.checkpoint_order}")
+        if use_latest:
+            # Per-musher prior decay based on their individual checkpoint
+            w_time = np.array([_prior_decay_weight(int(cp)) for cp in cp_orders])
+            print(f"  Prior decay (latest): per-musher, time w_full={w_time.mean():.3f} avg")
+        else:
+            w_time_scalar = _prior_decay_weight(args.checkpoint_order)
+            w_time = np.full(len(df), w_time_scalar)
+            print(f"  Prior decay: time w_full={w_time_scalar:.3f} at CP {args.checkpoint_order}")
+
+        # Same fast decay for both finish and time
+        # (separate finish decay needs post-race calibration before deployment)
+        p_finish = w_time * p_finish_full + (1 - w_time) * p_finish_snap
+        # Floor p_finish based on race progress — mushers deep into the race
+        # are very likely to finish regardless of what the model says
+        cp_pcts = pd.to_numeric(df["checkpoint_pct"], errors="coerce").fillna(0).values
+        p_finish_floor = np.clip(cp_pcts * 1.2, 0.3, 0.95)  # 36% at 30%, 60% at 50%, 95% at 79%+
+        p_finish = np.maximum(p_finish, p_finish_floor)
+        pred_remaining_sec = w_time * pred_remaining_sec_full + (1 - w_time) * pred_remaining_sec_snap
     else:
         p_finish = p_finish_full
         pred_remaining_sec = pred_remaining_sec_full
@@ -425,21 +494,18 @@ def main():
 
     pred_remaining_hours = pred_remaining_sec / 3600.0
 
-    # Predicted finish time (hours since start) = cum_elapsed + remaining
     cum_hours = pd.to_numeric(df["cum_elapsed_seconds"], errors="coerce").to_numpy(dtype=float) / 3600.0
     pred_finish_time_hours = cum_hours + pred_remaining_hours
 
-    # --- sigma selection (prefer sigma_hours_by_cp if present) ---
-    sigma_raw = _extract_sigma_hours_from_metadata(meta, args.checkpoint_order)
+    # --- sigma selection ---
+    sigma_raw = _extract_sigma_hours_from_metadata(meta, representative_cp)
 
-    # Determine sigma floor: fixed if provided, otherwise checkpoint-dependent
     if args.sigma_floor_hours is not None:
         sigma_floor = float(args.sigma_floor_hours)
     else:
-        # Try to get checkpoint_pct for a smarter floor
         cp_pct = pd.to_numeric(df.get("checkpoint_pct"), errors="coerce")
         cp_pct_val = cp_pct.dropna().iloc[0] if (cp_pct is not None and not cp_pct.dropna().empty) else None
-        sigma_floor = _checkpoint_dependent_sigma_floor(args.checkpoint_order, cp_pct_val)
+        sigma_floor = _checkpoint_dependent_sigma_floor(representative_cp, cp_pct_val)
 
     sigma_hours = max(float(sigma_raw), sigma_floor) * float(args.sigma_mult)
 
@@ -449,15 +515,12 @@ def main():
 
     rng = np.random.default_rng(args.seed)
 
-    # We incorporate p_finish by letting DNF become a large time penalty.
-    # "dnf_penalty_hours" should be big enough that any finisher beats it.
     max_ft = np.nanmax(pred_finish_time_hours)
     if not np.isfinite(max_ft):
         max_ft = 0.0
     dnf_penalty_hours = max_ft + 500.0
 
     # ---- Per-musher structural uncertainty ----
-    # Extract musher history from snapshot data (joined from musher_strength)
     n_finishes = pd.to_numeric(df.get("n_finishes", 0), errors="coerce").fillna(0).values
     is_rookie = pd.to_numeric(df.get("is_rookie", 0), errors="coerce").fillna(0).values
     ysl = pd.to_numeric(df.get("years_since_last_entry", 0), errors="coerce").fillna(0).values
@@ -467,60 +530,43 @@ def main():
     # Override: during in-race, trust race data over career history depth
     unc_mult = np.ones_like(unc_mult)
 
-    # ---- Decay unc_mult toward 1.0 as race progresses ----
-    # By mid-race, in-race data is more informative than career history depth.
-    # A thin-history musher at CP15 has 15 checkpoints of real data — we should
-    # be nearly as confident about their range as any veteran.
-    cp_pct_for_unc = pd.to_numeric(df.get("checkpoint_pct"), errors="coerce")
-    cp_pct_val_unc = float(cp_pct_for_unc.dropna().iloc[0]) if (cp_pct_for_unc is not None and not cp_pct_for_unc.dropna().empty) else None
-    unc_mult_raw = unc_mult.copy()
-    unc_mult = _decay_uncertainty_multiplier(unc_mult, args.checkpoint_order, cp_pct_val_unc)
-
     # Log-normal noise with per-musher scaling
-    # Shared noise (weather/trail, same for all mushers)
-    # Individual noise scaled by uncertainty multiplier per musher
     T_mean = np.nanmean(pred_finish_time_hours)
     if T_mean <= 0 or not np.isfinite(T_mean):
         T_mean = 240.0
 
     shared_sigma_log = np.clip(sigma_hours * np.sqrt(shared_frac) / T_mean, 0.01, 0.3)
 
-    # Per-musher individual sigma in log-space
     indiv_sigma_base = sigma_hours * np.sqrt(1.0 - shared_frac)
-    indiv_sigma_per_musher = indiv_sigma_base * unc_mult  # (n_mushers,)
+    indiv_sigma_per_musher = indiv_sigma_base * unc_mult
     indiv_sigma_log = np.clip(indiv_sigma_per_musher / T_mean, 0.01, 0.5)
 
-    # Shared noise (bias-corrected for log-normal)
     shared_noise = rng.normal(
         -shared_sigma_log**2 / 2, shared_sigma_log, (args.n_sims, 1)
     )
 
-    # Individual noise: per-musher sigma (bias-corrected)
     indiv_noise = rng.normal(
-        -indiv_sigma_log**2 / 2,   # per-musher bias correction
-        indiv_sigma_log,             # per-musher sigma
+        -indiv_sigma_log**2 / 2,
+        indiv_sigma_log,
         size=(args.n_sims, len(df)),
     )
 
     sim_finish = pred_finish_time_hours[None, :] * np.exp(shared_noise + indiv_noise)
 
-    # Apply finish probabilities -> some sims convert to DNF penalty
     u = rng.random(size=(args.n_sims, len(df)))
     sim_is_finish = u < p_finish[None, :]
     sim_finish = np.where(sim_is_finish, sim_finish, dnf_penalty_hours)
 
-    # Places: argsort per sim
     order = np.argsort(sim_finish, axis=1)
     ranks = np.empty_like(order)
-    rows = np.arange(args.n_sims)[:, None]
-    ranks[rows, order] = np.arange(len(df))[None, :]
+    rows_idx = np.arange(args.n_sims)[:, None]
+    ranks[rows_idx, order] = np.arange(len(df))[None, :]
     place = ranks + 1
 
     p_win = (place == 1).mean(axis=0)
     p_top10 = (place <= 10).mean(axis=0)
     exp_place = place.mean(axis=0).astype(float)
 
-    # Prediction intervals (80% CI on finishing position)
     place_p10 = np.percentile(place, 10, axis=0).astype(int)
     place_p90 = np.percentile(place, 90, axis=0).astype(int)
 
@@ -535,22 +581,25 @@ def main():
     out["place_p90"] = place_p90
     out["unc_mult"] = unc_mult
 
-    # Readability columns
     out["p_win_pct"] = 100.0 * out["p_win"]
     out["p_top10_pct"] = 100.0 * out["p_top10"]
     out["place_ci"] = [f"[{lo},{hi}]" for lo, hi in zip(place_p10, place_p90)]
 
+    # Label for output
+    if use_latest:
+        cp_label = f"latest(CP{min_cp}-{max_cp})"
+    else:
+        cp_label = str(args.checkpoint_order)
+
     print(
-        f"\nIn-race predictions | year={args.year} cp={args.checkpoint_order} | "
+        f"\nIn-race predictions | year={args.year} cp={cp_label} | "
         f"n_mushers={len(out)} | n_sims={args.n_sims} | reg_model_used={reg_used} | "
         f"sigma_hours≈{sigma_hours:.2f} (raw≈{sigma_raw:.2f}, floor={sigma_floor:.2f}, mult={args.sigma_mult:.2f}) | "
         f"shared_noise_frac={shared_frac:.2f}"
     )
 
-    # sort by win odds, then exp_place
     out = out.sort_values(["p_win", "exp_place"], ascending=[False, True])
 
-    # Pretty formatting
     pd.set_option("display.width", 200)
     pd.set_option("display.max_columns", 50)
 
@@ -566,8 +615,11 @@ def main():
     }
     print(out.head(25).to_string(index=False, formatters=fmt))
 
-    # Save csv next to models
-    save_path = model_dir / f"pred_inrace_{args.year}_cp{args.checkpoint_order}.csv"
+    # Save csv
+    if use_latest:
+        save_path = model_dir / f"pred_inrace_{args.year}_latest.csv"
+    else:
+        save_path = model_dir / f"pred_inrace_{args.year}_cp{args.checkpoint_order}.csv"
     out.to_csv(save_path, index=False)
     print(f"\nSaved predictions: {save_path}")
 
